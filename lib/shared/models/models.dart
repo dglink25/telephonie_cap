@@ -1,5 +1,6 @@
-import 'user_model.dart';
+export 'user_model.dart';
 
+import 'user_model.dart';
 
 class MessageModel {
   final int id;
@@ -32,14 +33,17 @@ class MessageModel {
         id: json['id'],
         conversationId: json['conversation_id'],
         senderId: json['sender_id'],
-        sender: json['sender'] != null ? UserModel.fromJson(json['sender']) : null,
+        sender:
+            json['sender'] != null ? UserModel.fromJson(json['sender']) : null,
         body: json['body'],
         type: json['type'] ?? 'text',
         mediaUrl: json['media_url'],
         mediaName: json['media_name'],
         mediaSize: json['media_size'],
         createdAt: DateTime.parse(json['created_at']),
-        deletedAt: json['deleted_at'] != null ? DateTime.tryParse(json['deleted_at']) : null,
+        deletedAt: json['deleted_at'] != null
+            ? DateTime.tryParse(json['deleted_at'])
+            : null,
       );
 
   bool get isDeleted => deletedAt != null;
@@ -50,10 +54,6 @@ class MessageModel {
   bool get isAudio => type == 'audio';
   bool get isVideo => type == 'video';
 }
-
-// ──────────────────────────────────────────────────────────────
-// Conversation
-// ──────────────────────────────────────────────────────────────
 class ConversationModel {
   final int id;
   final String type; // direct, group
@@ -75,11 +75,13 @@ class ConversationModel {
     this.lastReadAt,
   });
 
-  factory ConversationModel.fromJson(Map<String, dynamic> json) => ConversationModel(
+  factory ConversationModel.fromJson(Map<String, dynamic> json) =>
+      ConversationModel(
         id: json['id'],
         type: json['type'] ?? 'direct',
         groupId: json['group_id'],
-        group: json['group'] != null ? GroupModel.fromJson(json['group']) : null,
+        group:
+            json['group'] != null ? GroupModel.fromJson(json['group']) : null,
         participants: (json['participants'] as List? ?? [])
             .map((p) => UserModel.fromJson(p))
             .toList(),
@@ -105,7 +107,8 @@ class ConversationModel {
 
   String getDisplayName(int currentUserId) {
     if (isGroup) return group?.name ?? 'Groupe';
-    final other = participants.where((p) => p.id != currentUserId).firstOrNull;
+    final other =
+        participants.where((p) => p.id != currentUserId).firstOrNull;
     return other?.fullName ?? 'Inconnu';
   }
 
@@ -146,7 +149,9 @@ class GroupModel {
         description: json['description'],
         avatar: json['avatar'],
         createdBy: json['created_by'],
-        creator: json['creator'] != null ? UserModel.fromJson(json['creator']) : null,
+        creator: json['creator'] != null
+            ? UserModel.fromJson(json['creator'])
+            : null,
         isDefault: json['is_default'] ?? false,
         members: (json['members'] as List? ?? [])
             .map((m) => UserModel.fromJson(m))
@@ -157,12 +162,6 @@ class GroupModel {
       );
 
   String get initials => name.isNotEmpty ? name[0].toUpperCase() : 'G';
-
-  bool isAdmin(int userId) {
-    final member = members.where((m) => m.id == userId).firstOrNull;
-    return member != null &&
-        (userId == createdBy); // simplified; pivot role check needs API
-  }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -195,11 +194,16 @@ class CallModel {
         id: json['id'],
         conversationId: json['conversation_id'],
         callerId: json['caller_id'],
-        caller: json['caller'] != null ? UserModel.fromJson(json['caller']) : null,
+        caller:
+            json['caller'] != null ? UserModel.fromJson(json['caller']) : null,
         type: json['type'] ?? 'audio',
         status: json['status'] ?? 'pending',
-        startedAt: json['started_at'] != null ? DateTime.tryParse(json['started_at']) : null,
-        endedAt: json['ended_at'] != null ? DateTime.tryParse(json['ended_at']) : null,
+        startedAt: json['started_at'] != null
+            ? DateTime.tryParse(json['started_at'])
+            : null,
+        endedAt: json['ended_at'] != null
+            ? DateTime.tryParse(json['ended_at'])
+            : null,
         createdAt: DateTime.parse(json['created_at']),
       );
 
@@ -242,16 +246,18 @@ class NotificationModel {
     required this.createdAt,
   });
 
-  factory NotificationModel.fromJson(Map<String, dynamic> json) => NotificationModel(
+  factory NotificationModel.fromJson(Map<String, dynamic> json) =>
+      NotificationModel(
         id: json['id'],
         type: json['type'] ?? '',
-        data: json['data'] ?? {},
-        readAt: json['read_at'] != null ? DateTime.tryParse(json['read_at']) : null,
+        data: (json['data'] as Map<String, dynamic>?) ?? {},
+        readAt:
+            json['read_at'] != null ? DateTime.tryParse(json['read_at']) : null,
         createdAt: DateTime.parse(json['created_at']),
       );
 
   bool get isRead => readAt != null;
-  String get title => data['title'] ?? 'Notification';
+  String get title => data['title'] ?? data['sender_name'] ?? 'Notification';
   String get body => data['body'] ?? '';
 }
 
@@ -277,13 +283,16 @@ class InvitationModel {
     required this.createdAt,
   });
 
-  factory InvitationModel.fromJson(Map<String, dynamic> json) => InvitationModel(
+  factory InvitationModel.fromJson(Map<String, dynamic> json) =>
+      InvitationModel(
         id: json['id'],
         email: json['email'],
         token: json['token'],
         isUsed: json['is_used'] ?? false,
         expiresAt: DateTime.parse(json['expires_at']),
-        invitedBy: json['invited_by'] != null ? UserModel.fromJson(json['invited_by']) : null,
+        invitedBy: json['invited_by'] != null
+            ? UserModel.fromJson(json['invited_by'])
+            : null,
         createdAt: DateTime.parse(json['created_at']),
       );
 
@@ -291,7 +300,9 @@ class InvitationModel {
   bool get isValid => !isUsed && !isExpired;
 }
 
-
+// ──────────────────────────────────────────────────────────────
+// Paginated Response
+// ──────────────────────────────────────────────────────────────
 class PaginatedResponse<T> {
   final List<T> data;
   final int currentPage;

@@ -4,7 +4,9 @@ import '../constants/app_constants.dart';
 
 class ApiClient {
   late final Dio _dio;
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final FlutterSecureStorage _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
   static final ApiClient _instance = ApiClient._internal();
   factory ApiClient() => _instance;
@@ -52,7 +54,12 @@ class ApiClient {
   Future<Response> checkInvitation(String token) async =>
       _dio.get('/invitations/check/$token');
 
-  Future<Response> completeProfile(String token, String fullName, String password, String passwordConfirmation) async {
+  Future<Response> completeProfile(
+    String token,
+    String fullName,
+    String password,
+    String passwordConfirmation,
+  ) async {
     return _dio.post('/invitations/complete/$token', data: {
       'full_name': fullName,
       'password': password,
@@ -66,16 +73,19 @@ class ApiClient {
   Future<Response> startDirectConversation(int userId) async =>
       _dio.post('/conversations/direct', data: {'user_id': userId});
 
-  Future<Response> getConversation(int id) async => _dio.get('/conversations/$id');
+  Future<Response> getConversation(int id) async =>
+      _dio.get('/conversations/$id');
 
   Future<Response> markAsRead(int conversationId) async =>
       _dio.post('/conversations/$conversationId/read');
 
   // ─── Messages ────────────────────────────────────────────
   Future<Response> getMessages(int conversationId, {int page = 1}) async =>
-      _dio.get('/conversations/$conversationId/messages', queryParameters: {'page': page});
+      _dio.get('/conversations/$conversationId/messages',
+          queryParameters: {'page': page});
 
-  Future<Response> sendMessage(int conversationId, {
+  Future<Response> sendMessage(
+    int conversationId, {
     String? body,
     required String type,
     dynamic file,
@@ -89,7 +99,8 @@ class ApiClient {
   }
 
   Future<Response> sendTyping(int conversationId, bool isTyping) async =>
-      _dio.post('/conversations/$conversationId/typing', data: {'is_typing': isTyping});
+      _dio.post('/conversations/$conversationId/typing',
+          data: {'is_typing': isTyping});
 
   Future<Response> deleteMessage(int messageId) async =>
       _dio.delete('/messages/$messageId');
@@ -97,7 +108,11 @@ class ApiClient {
   // ─── Groups ──────────────────────────────────────────────
   Future<Response> getGroups() async => _dio.get('/groups');
 
-  Future<Response> createGroup(String name, {String? description, List<int>? memberIds}) async =>
+  Future<Response> createGroup(
+    String name, {
+    String? description,
+    List<int>? memberIds,
+  }) async =>
       _dio.post('/groups', data: {
         'name': name,
         if (description != null) 'description': description,
@@ -106,7 +121,8 @@ class ApiClient {
 
   Future<Response> getGroup(int id) async => _dio.get('/groups/$id');
 
-  Future<Response> updateGroup(int id, {String? name, String? description}) async =>
+  Future<Response> updateGroup(int id,
+          {String? name, String? description}) async =>
       _dio.put('/groups/$id', data: {
         if (name != null) 'name': name,
         if (description != null) 'description': description,
@@ -127,12 +143,22 @@ class ApiClient {
   Future<Response> initiateCall(int conversationId, String type) async =>
       _dio.post('/conversations/$conversationId/calls', data: {'type': type});
 
-  Future<Response> answerCall(int callId) async => _dio.post('/calls/$callId/answer');
-  Future<Response> rejectCall(int callId) async => _dio.post('/calls/$callId/reject');
-  Future<Response> endCall(int callId) async => _dio.post('/calls/$callId/end');
+  Future<Response> answerCall(int callId) async =>
+      _dio.post('/calls/$callId/answer');
 
-  Future<Response> sendSignal(int callId, String signalType, Map<String, dynamic> payload) async =>
-      _dio.post('/calls/$callId/signal', data: {'signal_type': signalType, 'payload': payload});
+  Future<Response> rejectCall(int callId) async =>
+      _dio.post('/calls/$callId/reject');
+
+  Future<Response> endCall(int callId) async =>
+      _dio.post('/calls/$callId/end');
+
+  Future<Response> sendSignal(
+    int callId,
+    String signalType,
+    Map<String, dynamic> payload,
+  ) async =>
+      _dio.post('/calls/$callId/signal',
+          data: {'signal_type': signalType, 'payload': payload});
 
   Future<Response> getCallHistory(int conversationId) async =>
       _dio.get('/conversations/$conversationId/calls');
@@ -147,23 +173,28 @@ class ApiClient {
   Future<Response> readAllNotifications() async =>
       _dio.post('/notifications/read-all');
 
-  Future<Response> getUnreadCount() async => _dio.get('/notifications/unread-count');
+  Future<Response> getUnreadCount() async =>
+      _dio.get('/notifications/unread-count');
 
   Future<Response> updateFcmToken(String token) async =>
       _dio.post('/fcm-token', data: {'fcm_token': token});
 
   // ─── Admin ───────────────────────────────────────────────
   Future<Response> adminGetUsers({String? status}) async =>
-      _dio.get('/admin/users', queryParameters: {if (status != null) 'status': status});
+      _dio.get('/admin/users',
+          queryParameters: {if (status != null) 'status': status});
 
-  Future<Response> adminGetUser(int id) async => _dio.get('/admin/users/$id');
+  Future<Response> adminGetUser(int id) async =>
+      _dio.get('/admin/users/$id');
 
   Future<Response> adminUpdateStatus(int id, String status) async =>
       _dio.patch('/admin/users/$id/status', data: {'status': status});
 
-  Future<Response> adminDeleteUser(int id) async => _dio.delete('/admin/users/$id');
+  Future<Response> adminDeleteUser(int id) async =>
+      _dio.delete('/admin/users/$id');
 
-  Future<Response> adminGetInvitations() async => _dio.get('/admin/invitations');
+  Future<Response> adminGetInvitations() async =>
+      _dio.get('/admin/invitations');
 
   Future<Response> adminCreateInvitation(String email) async =>
       _dio.post('/admin/invitations', data: {'email': email});

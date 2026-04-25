@@ -2,7 +2,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/api_client.dart';
 import '../../../shared/models/models.dart';
 
-class ConversationsNotifier extends StateNotifier<AsyncValue<List<ConversationModel>>> {
+class ConversationsNotifier
+    extends StateNotifier<AsyncValue<List<ConversationModel>>> {
   final ApiClient _api = ApiClient();
 
   ConversationsNotifier() : super(const AsyncLoading()) {
@@ -74,7 +75,7 @@ class ConversationsNotifier extends StateNotifier<AsyncValue<List<ConversationMo
   }
 }
 
-final conversationsProvider =
-    StateNotifierProvider<ConversationsNotifier, AsyncValue<List<ConversationModel>>>(
+final conversationsProvider = StateNotifierProvider<ConversationsNotifier,
+    AsyncValue<List<ConversationModel>>>(
   (ref) => ConversationsNotifier(),
 );

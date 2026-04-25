@@ -16,20 +16,17 @@ class WebSocketService {
   Future<void> init(String authToken) async {
     if (_initialized) return;
 
-    await _pusher.init(
-      apiKey: AppConstants.reverbAppKey,
-      cluster: 'mt1',
-      wsHost: AppConstants.reverbHost,
-      wsPort: AppConstants.reverbPort,
-      wssPort: AppConstants.reverbPort,
-      useTLS: AppConstants.reverbScheme == 'https',
-      authEndpoint: '${AppConstants.baseUrl.replaceAll('/api', '')}/broadcasting/auth',
-      onAuthorizer: (channelName, socketId, options) async {
-        return {
-          'headers': {'Authorization': 'Bearer $authToken'},
-        };
-      },
-    );
+   await _pusher.init(
+    apiKey: AppConstants.reverbAppKey,
+    cluster: 'mt1',
+    authEndpoint:
+        '${AppConstants.baseUrl.replaceAll('/api', '')}/broadcasting/auth',
+    onAuthorizer: (channelName, socketId, options) async {
+      return {
+        'headers': {'Authorization': 'Bearer $authToken'},
+      };
+    },
+  );
 
     await _pusher.connect();
     _initialized = true;
@@ -73,4 +70,6 @@ class WebSocketService {
     _initialized = false;
     _channels.clear();
   }
+
+  bool get isConnected => _initialized;
 }

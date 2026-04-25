@@ -12,7 +12,6 @@ import '../../data/messages_provider.dart';
 
 class ChatPage extends ConsumerStatefulWidget {
   final int conversationId;
-
   const ChatPage({super.key, required this.conversationId});
 
   @override
@@ -34,8 +33,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     _markRead();
 
     _scrollController.addListener(() {
-      if (_scrollController.position.pixels == _scrollController.position.maxScrollExtent) {
-        ref.read(messagesProvider(widget.conversationId).notifier).loadMore();
+      if (_scrollController.position.pixels ==
+          _scrollController.position.maxScrollExtent) {
+        ref
+            .read(messagesProvider(widget.conversationId).notifier)
+            .loadMore();
       }
     });
 
@@ -43,14 +45,17 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       final typing = _textController.text.isNotEmpty;
       if (typing != _isTyping) {
         _isTyping = typing;
-        ref.read(messagesProvider(widget.conversationId).notifier).sendTyping(typing);
+        ref
+            .read(messagesProvider(widget.conversationId).notifier)
+            .sendTyping(typing);
       }
     });
   }
 
   Future<void> _loadConversation() async {
     try {
-      final response = await ApiClient().getConversation(widget.conversationId);
+      final response =
+          await ApiClient().getConversation(widget.conversationId);
       if (mounted) {
         setState(() {
           _conversation = ConversationModel.fromJson(response.data);
@@ -62,7 +67,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Future<void> _markRead() async {
     try {
       await ApiClient().markAsRead(widget.conversationId);
-      ref.read(conversationsProvider.notifier).markRead(widget.conversationId);
+      ref
+          .read(conversationsProvider.notifier)
+          .markRead(widget.conversationId);
     } catch (_) {}
   }
 
@@ -70,7 +77,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
     _textController.clear();
-    await ref.read(messagesProvider(widget.conversationId).notifier).sendText(text);
+    await ref
+        .read(messagesProvider(widget.conversationId).notifier)
+        .sendText(text);
     _scrollToBottom();
   }
 
@@ -87,11 +96,20 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   @override
+  void dispose() {
+    _textController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final messagesAsync = ref.watch(messagesProvider(widget.conversationId));
+    final messagesAsync =
+        ref.watch(messagesProvider(widget.conversationId));
     final currentUser = ref.watch(currentUserProvider);
     final conv = _conversation;
-    final displayName = conv?.getDisplayName(currentUser?.id ?? 0) ?? 'Conversation';
+    final displayName =
+        conv?.getDisplayName(currentUser?.id ?? 0) ?? 'Conversation';
     final other = conv?.getOtherParticipant(currentUser?.id ?? 0);
 
     return Scaffold(
@@ -105,17 +123,30 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 child: CircularProgressIndicator(color: AppColors.primary),
               ),
               error: (e, _) => Center(
-                child: Text('Erreur: $e',
-                    style: const TextStyle(color: AppColors.grey500)),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.error_outline,
+                        color: AppColors.grey300, size: 48),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: () => ref
+                          .read(messagesProvider(widget.conversationId)
+                              .notifier)
+                          .load(refresh: true),
+                      child: const Text('Réessayer'),
+                    ),
+                  ],
+                ),
               ),
-              data: (messages) => _buildMessageList(messages, currentUser?.id ?? 0),
+              data: (messages) =>
+                  _buildMessageList(messages, currentUser?.id ?? 0),
             ),
           ),
-
-          // Typing indicator
           if (_otherTyping)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               alignment: Alignment.centerLeft,
               child: Text(
                 '$_otherTypingName est en train d\'écrire...',
@@ -127,24 +158,29 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 ),
               ),
             ),
-
           _buildInputArea(),
         ],
       ),
     );
   }
 
-  AppBar _buildAppBar(String name, UserModel? other, ConversationModel? conv) {
+  AppBar _buildAppBar(
+      String name, UserModel? other, ConversationModel? conv) {
     return AppBar(
       backgroundColor: AppColors.white,
       titleSpacing: 0,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back_ios_new_rounded,
+            color: AppColors.grey700, size: 20),
+        onPressed: () => context.pop(),
+      ),
       title: Row(
         children: [
           if (conv?.isGroup == true)
             Container(
               width: 38,
               height: 38,
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: AppColors.primarySurface,
                 shape: BoxShape.circle,
               ),
@@ -204,14 +240,17 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       actions: [
         IconButton(
           icon: const Icon(Icons.call_outlined),
+          color: AppColors.grey700,
           onPressed: () => _initiateCall('audio'),
         ),
         IconButton(
           icon: const Icon(Icons.videocam_outlined),
+          color: AppColors.grey700,
           onPressed: () => _initiateCall('video'),
         ),
         IconButton(
           icon: const Icon(Icons.more_vert_rounded),
+          color: AppColors.grey700,
           onPressed: () {},
         ),
       ],
@@ -220,24 +259,28 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   Future<void> _initiateCall(String type) async {
     try {
-      final response = await ApiClient().initiateCall(widget.conversationId, type);
+      final response =
+          await ApiClient().initiateCall(widget.conversationId, type);
       final call = CallModel.fromJson(response.data);
       if (mounted) context.push('/calls/${call.id}', extra: call);
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Impossible de démarrer l\'appel')),
+          const SnackBar(
+              content: Text('Impossible de démarrer l\'appel')),
         );
       }
     }
   }
 
-  Widget _buildMessageList(List<MessageModel> messages, int currentUserId) {
+  Widget _buildMessageList(
+      List<MessageModel> messages, int currentUserId) {
     if (messages.isEmpty) {
       return const Center(
         child: Text(
           'Envoyez votre premier message !',
-          style: TextStyle(color: AppColors.grey400, fontFamily: 'Nunito'),
+          style: TextStyle(
+              color: AppColors.grey400, fontFamily: 'Nunito'),
         ),
       );
     }
@@ -251,7 +294,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         final isMine = message.senderId == currentUserId;
         final prevMsg = index > 0 ? messages[index - 1] : null;
         final showAvatar = !isMine &&
-            (prevMsg == null || prevMsg.senderId != message.senderId);
+            (prevMsg == null ||
+                prevMsg.senderId != message.senderId);
 
         return _MessageBubble(
           message: message,
@@ -289,7 +333,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           IconButton(
-            icon: const Icon(Icons.attach_file_rounded, color: AppColors.grey400),
+            icon: const Icon(Icons.attach_file_rounded,
+                color: AppColors.grey400),
             onPressed: () {},
           ),
           Expanded(
@@ -314,7 +359,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   hintText: 'Message...',
                   hintStyle: TextStyle(color: AppColors.grey400),
                   border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 ),
               ),
             ),
@@ -331,7 +377,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   width: 44,
                   height: 44,
                   decoration: BoxDecoration(
-                    color: hasText ? AppColors.primary : AppColors.grey200,
+                    color: hasText
+                        ? AppColors.primary
+                        : AppColors.grey200,
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
@@ -368,25 +416,29 @@ class _MessageBubble extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Row(
-        mainAxisAlignment: isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment:
+            isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           if (!isMine) ...[
             showAvatar
-                ? AvatarWidget(name: message.sender?.fullName ?? '?', size: 30)
+                ? AvatarWidget(
+                    name: message.sender?.fullName ?? '?', size: 30)
                 : const SizedBox(width: 30),
             const SizedBox(width: 8),
           ],
-
           GestureDetector(
             onLongPress: onDelete != null ? () => _showMenu(context) : null,
             child: Container(
               constraints: BoxConstraints(
                 maxWidth: MediaQuery.of(context).size.width * 0.72,
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: isMine ? AppColors.bubbleSent : AppColors.bubbleReceived,
+                color: isMine
+                    ? AppColors.bubbleSent
+                    : AppColors.bubbleReceived,
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(18),
                   topRight: const Radius.circular(18),
@@ -417,7 +469,6 @@ class _MessageBubble extends StatelessWidget {
                         ),
                       ),
                     ),
-
                   if (message.isDeleted)
                     Text(
                       'Message supprimé',
@@ -444,7 +495,6 @@ class _MessageBubble extends StatelessWidget {
                         ),
                       ),
                   ],
-
                   const SizedBox(height: 4),
                   Align(
                     alignment: Alignment.bottomRight,
@@ -491,9 +541,11 @@ class _MessageBubble extends StatelessWidget {
               ),
             ),
             ListTile(
-              leading: const Icon(Icons.delete_outline_rounded, color: AppColors.error),
+              leading: const Icon(Icons.delete_outline_rounded,
+                  color: AppColors.error),
               title: const Text('Supprimer le message',
-                  style: TextStyle(color: AppColors.error, fontFamily: 'Nunito')),
+                  style: TextStyle(
+                      color: AppColors.error, fontFamily: 'Nunito')),
               onTap: () {
                 Navigator.pop(context);
                 onDelete?.call();

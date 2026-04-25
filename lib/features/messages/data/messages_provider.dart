@@ -2,7 +2,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/api_client.dart';
 import '../../../shared/models/models.dart';
 
-class MessagesNotifier extends StateNotifier<AsyncValue<List<MessageModel>>> {
+class MessagesNotifier
+    extends StateNotifier<AsyncValue<List<MessageModel>>> {
   final int conversationId;
   final ApiClient _api = ApiClient();
   int _currentPage = 1;
@@ -19,7 +20,8 @@ class MessagesNotifier extends StateNotifier<AsyncValue<List<MessageModel>>> {
       state = const AsyncLoading();
     }
     try {
-      final response = await _api.getMessages(conversationId, page: _currentPage);
+      final response =
+          await _api.getMessages(conversationId, page: _currentPage);
       final data = response.data as Map<String, dynamic>;
       final list = (data['data'] as List)
           .map((e) => MessageModel.fromJson(e))
@@ -31,7 +33,8 @@ class MessagesNotifier extends StateNotifier<AsyncValue<List<MessageModel>>> {
       if (refresh || _currentPage == 1) {
         state = AsyncData(list);
       } else {
-        state.whenData((existing) => state = AsyncData([...list, ...existing]));
+        state.whenData(
+            (existing) => state = AsyncData([...list, ...existing]));
       }
     } catch (e, s) {
       state = AsyncError(e, s);
@@ -50,13 +53,15 @@ class MessagesNotifier extends StateNotifier<AsyncValue<List<MessageModel>>> {
 
   void removeMessage(int messageId) {
     state.whenData(
-      (msgs) => state = AsyncData(msgs.where((m) => m.id != messageId).toList()),
+      (msgs) =>
+          state = AsyncData(msgs.where((m) => m.id != messageId).toList()),
     );
   }
 
   Future<bool> sendText(String body) async {
     try {
-      final response = await _api.sendMessage(conversationId, body: body, type: 'text');
+      final response =
+          await _api.sendMessage(conversationId, body: body, type: 'text');
       final msg = MessageModel.fromJson(response.data);
       addMessage(msg);
       return true;

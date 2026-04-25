@@ -28,9 +28,13 @@ class _LoginPageState extends ConsumerState<LoginPage>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-    _fadeAnim = CurvedAnimation(parent: _animController, curve: Curves.easeOut);
-    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.06), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic));
+    _fadeAnim =
+        CurvedAnimation(parent: _animController, curve: Curves.easeOut);
+    _slideAnim = Tween<Offset>(
+      begin: const Offset(0, 0.06),
+      end: Offset.zero,
+    ).animate(
+        CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic));
     _animController.forward();
   }
 
@@ -65,30 +69,33 @@ class _LoginPageState extends ConsumerState<LoginPage>
     );
   }
 
+  // ─── Layout large (Web/tablette) ────────────────────────────
   Widget _buildWideLayout(AuthState auth) {
     return Row(
       children: [
-        // ─── Left panel ───────────────────────────────────────
         Expanded(
           child: Container(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [AppColors.primaryDark, AppColors.primary, AppColors.primaryLight],
+                colors: [
+                  AppColors.primaryDark,
+                  AppColors.primary,
+                  AppColors.primaryLight
+                ],
               ),
             ),
             child: _buildBrandPanel(),
           ),
         ),
-        // ─── Right panel ──────────────────────────────────────
         Expanded(
           child: Center(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(48),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 420),
-                child: _buildForm(auth),
+                child: _buildFormCard(auth),
               ),
             ),
           ),
@@ -97,12 +104,14 @@ class _LoginPageState extends ConsumerState<LoginPage>
     );
   }
 
+  // ─── Layout étroit (Mobile) ─────────────────────────────────
   Widget _buildNarrowLayout(AuthState auth) {
     return Stack(
       children: [
-        // ─── Background gradient top ──────────────────────────
         Positioned(
-          top: 0, left: 0, right: 0,
+          top: 0,
+          left: 0,
+          right: 0,
           height: MediaQuery.of(context).size.height * 0.38,
           child: Container(
             decoration: const BoxDecoration(
@@ -118,7 +127,6 @@ class _LoginPageState extends ConsumerState<LoginPage>
             ),
           ),
         ),
-
         SafeArea(
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -164,7 +172,7 @@ class _LoginPageState extends ConsumerState<LoginPage>
           ),
           const SizedBox(height: 16),
           Text(
-            'La plateforme de communication interne\nde votre organisation.',
+            'La plateforme de communication interne\nde  de CAP-EPAC.',
             style: TextStyle(
               color: Colors.white.withOpacity(0.75),
               fontSize: 16,
@@ -219,10 +227,14 @@ class _LoginPageState extends ConsumerState<LoginPage>
           width: compact ? 44 : 52,
           height: compact ? 44 : 52,
           decoration: BoxDecoration(
-            color: light ? Colors.white.withOpacity(0.2) : AppColors.primarySurface,
+            color: light
+                ? Colors.white.withOpacity(0.2)
+                : AppColors.primarySurface,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: light ? Colors.white.withOpacity(0.4) : AppColors.primaryMid,
+              color: light
+                  ? Colors.white.withOpacity(0.4)
+                  : AppColors.primaryMid,
             ),
           ),
           child: ClipRRect(
@@ -233,7 +245,7 @@ class _LoginPageState extends ConsumerState<LoginPage>
               errorBuilder: (_, __, ___) => Icon(
                 Icons.phone_rounded,
                 color: light ? Colors.white : AppColors.primary,
-                size: compact ? 24 : 28,
+                size: compact ? 28 : 32,
               ),
             ),
           ),
@@ -255,7 +267,9 @@ class _LoginPageState extends ConsumerState<LoginPage>
             Text(
               'CAP',
               style: TextStyle(
-                color: light ? Colors.white.withOpacity(0.75) : AppColors.primary,
+                color: light
+                    ? Colors.white.withOpacity(0.75)
+                    : AppColors.primary,
                 fontSize: compact ? 12 : 13,
                 fontWeight: FontWeight.w700,
                 fontFamily: 'Nunito',
@@ -282,188 +296,182 @@ class _LoginPageState extends ConsumerState<LoginPage>
         ],
       ),
       padding: const EdgeInsets.all(28),
-      child: _buildForm(auth),
-    );
-  }
-
-  Widget _buildForm(AuthState auth) {
-    return FadeTransition(
-      opacity: _fadeAnim,
-      child: SlideTransition(
-        position: _slideAnim,
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Connexion',
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.grey800,
-                  fontFamily: 'Nunito',
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Accédez à votre espace de travail',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: AppColors.grey500,
-                  fontFamily: 'Nunito',
-                ),
-              ),
-              const SizedBox(height: 32),
-
-              // Error banner
-              if (auth.error != null) ...[
-                _buildErrorBanner(auth.error!),
-                const SizedBox(height: 20),
-              ],
-
-              // Email
-              _buildLabel('Adresse email'),
-              const SizedBox(height: 8),
-              TextFormField(
-                controller: _emailController,
-                keyboardType: TextInputType.emailAddress,
-                textInputAction: TextInputAction.next,
-                decoration: InputDecoration(
-                  hintText: 'vous@example.com',
-                  prefixIcon: Icon(Icons.email_outlined, color: AppColors.grey400, size: 20),
-                ),
-                validator: (v) {
-                  if (v == null || v.isEmpty) return 'Email requis';
-                  if (!v.contains('@')) return 'Email invalide';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 20),
-
-              // Password
-              _buildLabel('Mot de passe'),
-              const SizedBox(height: 8),
-              TextFormField(
-                controller: _passwordController,
-                obscureText: _obscurePassword,
-                textInputAction: TextInputAction.done,
-                onFieldSubmitted: (_) => _submit(),
-                decoration: InputDecoration(
-                  hintText: '••••••••',
-                  prefixIcon: Icon(Icons.lock_outline_rounded, color: AppColors.grey400, size: 20),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                      color: AppColors.grey400,
-                      size: 20,
-                    ),
-                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                  ),
-                ),
-                validator: (v) {
-                  if (v == null || v.isEmpty) return 'Mot de passe requis';
-                  if (v.length < 6) return 'Minimum 6 caractères';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 32),
-
-              // Submit button
-              SizedBox(
-                width: double.infinity,
-                height: 54,
-                child: ElevatedButton(
-                  onPressed: auth.isLoading ? null : _submit,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: auth.isLoading
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              'Se connecter',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                fontFamily: 'Nunito',
-                              ),
-                            ),
-                            SizedBox(width: 8),
-                            Icon(Icons.arrow_forward_rounded, size: 18),
-                          ],
-                        ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
-              Center(
-                child: Text(
-                  'Accès sur invitation uniquement.',
+      child: FadeTransition(
+        opacity: _fadeAnim,
+        child: SlideTransition(
+          position: _slideAnim,
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Connexion',
                   style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.grey400,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.grey800,
                     fontFamily: 'Nunito',
                   ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 6),
+                const Text(
+                  'Accédez à votre espace de travail',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: AppColors.grey500,
+                    fontFamily: 'Nunito',
+                  ),
+                ),
+                const SizedBox(height: 32),
+
+                if (auth.error != null) ...[
+                  _buildErrorBanner(auth.error!),
+                  const SizedBox(height: 20),
+                ],
+
+                _buildLabel('Adresse email'),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    hintText: 'vous@example.com',
+                    prefixIcon: Icon(Icons.email_outlined,
+                        color: AppColors.grey400, size: 20),
+                  ),
+                  validator: (v) {
+                    if (v == null || v.isEmpty) return 'Email requis';
+                    if (!v.contains('@')) return 'Email invalide';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 20),
+
+                _buildLabel('Mot de passe'),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _passwordController,
+                  obscureText: _obscurePassword,
+                  textInputAction: TextInputAction.done,
+                  onFieldSubmitted: (_) => _submit(),
+                  decoration: InputDecoration(
+                    hintText: '••••••••',
+                    prefixIcon: const Icon(Icons.lock_outline_rounded,
+                        color: AppColors.grey400, size: 20),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        color: AppColors.grey400,
+                        size: 20,
+                      ),
+                      onPressed: () =>
+                          setState(() => _obscurePassword = !_obscurePassword),
+                    ),
+                  ),
+                  validator: (v) {
+                    if (v == null || v.isEmpty) return 'Mot de passe requis';
+                    if (v.length < 6) return 'Minimum 6 caractères';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 32),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 54,
+                  child: ElevatedButton(
+                    onPressed: auth.isLoading ? null : _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: auth.isLoading
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                'Se connecter',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  fontFamily: 'Nunito',
+                                ),
+                              ),
+                              SizedBox(width: 8),
+                              Icon(Icons.arrow_forward_rounded, size: 18),
+                            ],
+                          ),
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+                Center(
+                  child: Text(
+                    'Accès sur invitation uniquement.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.grey400,
+                      fontFamily: 'Nunito',
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildLabel(String label) {
-    return Text(
-      label,
-      style: const TextStyle(
-        fontSize: 13,
-        fontWeight: FontWeight.w600,
-        color: AppColors.grey600,
-        fontFamily: 'Nunito',
-      ),
-    );
-  }
+  Widget _buildLabel(String label) => Text(
+        label,
+        style: const TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: AppColors.grey600,
+          fontFamily: 'Nunito',
+        ),
+      );
 
-  Widget _buildErrorBanner(String error) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFEF2F2),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFFECACA)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.error_outline_rounded, color: AppColors.error, size: 18),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              error,
-              style: const TextStyle(
-                color: AppColors.error,
-                fontSize: 13,
-                fontFamily: 'Nunito',
+  Widget _buildErrorBanner(String error) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFEF2F2),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFFECACA)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.error_outline_rounded,
+                color: AppColors.error, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                error,
+                style: const TextStyle(
+                  color: AppColors.error,
+                  fontSize: 13,
+                  fontFamily: 'Nunito',
+                ),
               ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
+          ],
+        ),
+      );
 }

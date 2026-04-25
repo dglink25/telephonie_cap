@@ -28,8 +28,32 @@ class ConversationsPage extends ConsumerWidget {
           ),
           IconButton(
             icon: const Icon(Icons.edit_outlined),
-            onPressed: () => _showNewConversation(context, ref),
+            onPressed: () {},
           ),
+          // Bouton déconnexion visible seulement sur mobile
+          if (MediaQuery.of(context).size.width < 768)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert_rounded),
+              onSelected: (v) {
+                if (v == 'logout') {
+                  ref.read(authProvider.notifier).logout();
+                }
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(
+                  value: 'logout',
+                  child: Row(
+                    children: [
+                      Icon(Icons.logout_rounded,
+                          color: AppColors.grey600, size: 18),
+                      SizedBox(width: 8),
+                      Text('Déconnexion',
+                          style: TextStyle(fontFamily: 'Nunito')),
+                    ],
+                  ),
+                ),
+              ],
+            ),
         ],
       ),
       body: conversationsAsync.when(
@@ -39,7 +63,8 @@ class ConversationsPage extends ConsumerWidget {
           if (conversations.isEmpty) return _buildEmpty();
           return RefreshIndicator(
             color: AppColors.primary,
-            onRefresh: () => ref.read(conversationsProvider.notifier).load(),
+            onRefresh: () =>
+                ref.read(conversationsProvider.notifier).load(),
             child: ListView.builder(
               padding: const EdgeInsets.symmetric(vertical: 8),
               itemCount: conversations.length,
@@ -54,11 +79,6 @@ class ConversationsPage extends ConsumerWidget {
     );
   }
 
-  void _showNewConversation(BuildContext context, WidgetRef ref) {
-    // Navigate to user list to start conversation
-    context.push('/users/select');
-  }
-
   Widget _buildShimmer() {
     return ListView.builder(
       padding: const EdgeInsets.all(16),
@@ -70,7 +90,7 @@ class ConversationsPage extends ConsumerWidget {
             Container(
               width: 52,
               height: 52,
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: AppColors.grey200,
                 shape: BoxShape.circle,
               ),
@@ -80,9 +100,15 @@ class ConversationsPage extends ConsumerWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(width: 140, height: 14, color: AppColors.grey200,
+                  Container(
+                      width: 140,
+                      height: 14,
+                      color: AppColors.grey200,
                       margin: const EdgeInsets.only(bottom: 8)),
-                  Container(width: double.infinity, height: 12, color: AppColors.grey100),
+                  Container(
+                      width: double.infinity,
+                      height: 12,
+                      color: AppColors.grey100),
                 ],
               ),
             ),
@@ -103,7 +129,8 @@ class ConversationsPage extends ConsumerWidget {
               style: TextStyle(color: AppColors.grey500)),
           const SizedBox(height: 16),
           TextButton(
-            onPressed: () => ref.read(conversationsProvider.notifier).load(),
+            onPressed: () =>
+                ref.read(conversationsProvider.notifier).load(),
             child: const Text('Réessayer'),
           ),
         ],
@@ -165,7 +192,6 @@ class _ConversationTile extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Row(
           children: [
-            // Avatar
             Stack(
               children: [
                 if (conversation.isGroup)
@@ -175,7 +201,7 @@ class _ConversationTile extends StatelessWidget {
                     name: other?.fullName ?? name,
                     size: 52,
                   ),
-                if (!conversation.isGroup && other != null)
+                if (!conversation.isGroup)
                   Positioned(
                     bottom: 0,
                     right: 0,
@@ -192,8 +218,6 @@ class _ConversationTile extends StatelessWidget {
               ],
             ),
             const SizedBox(width: 14),
-
-            // Content
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -205,7 +229,8 @@ class _ConversationTile extends StatelessWidget {
                           name,
                           style: TextStyle(
                             fontSize: 15,
-                            fontWeight: hasUnread ? FontWeight.w700 : FontWeight.w600,
+                            fontWeight:
+                                hasUnread ? FontWeight.w700 : FontWeight.w600,
                             color: AppColors.grey800,
                             fontFamily: 'Nunito',
                           ),
@@ -214,11 +239,16 @@ class _ConversationTile extends StatelessWidget {
                       ),
                       if (conversation.lastMessageAt != null)
                         Text(
-                          timeago.format(conversation.lastMessageAt!, locale: 'fr'),
+                          timeago.format(conversation.lastMessageAt!,
+                              locale: 'fr'),
                           style: TextStyle(
                             fontSize: 12,
-                            color: hasUnread ? AppColors.primary : AppColors.grey400,
-                            fontWeight: hasUnread ? FontWeight.w600 : FontWeight.w400,
+                            color: hasUnread
+                                ? AppColors.primary
+                                : AppColors.grey400,
+                            fontWeight: hasUnread
+                                ? FontWeight.w600
+                                : FontWeight.w400,
                             fontFamily: 'Nunito',
                           ),
                         ),
@@ -234,8 +264,12 @@ class _ConversationTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 13,
-                            color: hasUnread ? AppColors.grey700 : AppColors.grey400,
-                            fontWeight: hasUnread ? FontWeight.w600 : FontWeight.w400,
+                            color: hasUnread
+                                ? AppColors.grey700
+                                : AppColors.grey400,
+                            fontWeight: hasUnread
+                                ? FontWeight.w600
+                                : FontWeight.w400,
                             fontFamily: 'Nunito',
                           ),
                         ),
@@ -272,7 +306,7 @@ class _ConversationTile extends StatelessWidget {
 }
 
 class _GroupAvatar extends StatelessWidget {
-  final dynamic group;
+  final GroupModel? group;
   const _GroupAvatar({this.group});
 
   @override

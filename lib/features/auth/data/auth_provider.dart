@@ -1,7 +1,7 @@
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/api/auth_storage.dart';
+import '../../../core/api/websocket_service.dart';
 import '../../../shared/models/user_model.dart';
 
 class AuthState {
@@ -22,7 +22,8 @@ class AuthState {
     bool? isLoading,
     String? error,
     bool? isAuthenticated,
-  }) => AuthState(
+  }) =>
+      AuthState(
         user: user ?? this.user,
         isLoading: isLoading ?? this.isLoading,
         error: error,
@@ -42,11 +43,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
     final loggedIn = await AuthStorage.isLoggedIn();
     if (loggedIn) {
       final userData = await AuthStorage.getUser();
+      final token = await AuthStorage.getToken();
       if (userData != null) {
         state = state.copyWith(
           user: UserModel.fromJson(userData),
           isAuthenticated: true,
         );
+        // Reconnect WebSocket
+        if (token != null) {
+          try {
+            await WebSocketService().init(token);
+          } catch (_) {}
+        }
       }
     }
   }
@@ -62,6 +70,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await AuthStorage.saveToken(token);
       await AuthStorage.saveUser(user.toJson());
 
+      // Connect WebSocket
+      try {
+        await WebSocketService().init(token);
+      } catch (_) {}
+
       state = state.copyWith(
         user: user,
         isAuthenticated: true,
@@ -69,8 +82,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
       return true;
     } catch (e) {
-      String message = 'Identifiants incorrects.';
-      state = state.copyWith(isLoading: false, error: message);
+      state = state.copyWith(
+        isLoading: false,
+        error: 'Identifiants incorrects.',
+      );
       return false;
     }
   }
@@ -80,21 +95,33 @@ class AuthNotifier extends StateNotifier<AuthState> {
     try {
       await _api.logout();
     } catch (_) {}
+    try {
+      await WebSocketService().disconnect();
+    } catch (_) {}
     await AuthStorage.clear();
     state = const AuthState();
   }
 
   Future<bool> completeProfile(
-      String token, String fullName, String password, String confirmation) async {
+    String token,
+    String fullName,
+    String password,
+    String confirmation,
+  ) async {
     state = state.copyWith(isLoading: true, error: null);
     try {
-      final response = await _api.completeProfile(token, fullName, password, confirmation);
+      final response =
+          await _api.completeProfile(token, fullName, password, confirmation);
       final data = response.data as Map<String, dynamic>;
       final apiToken = data['token'] as String;
       final user = UserModel.fromJson(data['user'] as Map<String, dynamic>);
 
       await AuthStorage.saveToken(apiToken);
       await AuthStorage.saveUser(user.toJson());
+
+      try {
+        await WebSocketService().init(apiToken);
+      } catch (_) {}
 
       state = state.copyWith(
         user: user,
@@ -103,7 +130,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
       return true;
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: 'Erreur lors de la création du compte.');
+      state = state.copyWith(
+        isLoading: false,
+        error: 'Erreur lors de la création du compte.',
+      );
       return false;
     }
   }
@@ -111,7 +141,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   void clearError() => state = state.copyWith(error: null);
 }
 
-// ─── Provider ────────────────────────────────────────────────
+// ─── Providers ───────────────────────────────────────────────
 final authProvider = StateNotifierProvider<AuthNotifier, AuthState>(
   (ref) => AuthNotifier(),
 );

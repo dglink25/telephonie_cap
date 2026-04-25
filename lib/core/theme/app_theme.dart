@@ -4,11 +4,11 @@ class AppColors {
   AppColors._();
 
   // ─── Palette principale : Vert & Blanc ─────────────────────
-  static const Color primary = Color(0xFF1B7F4A);       // Vert profond CAP
-  static const Color primaryLight = Color(0xFF2EA05E);  // Vert clair
-  static const Color primaryDark = Color(0xFF0F5232);   // Vert foncé
-  static const Color primarySurface = Color(0xFFE8F5EE); // Vert très pâle
-  static const Color primaryMid = Color(0xFFB2DFCB);    // Vert moyen
+  static const Color primary = Color(0xFF1B7F4A);
+  static const Color primaryLight = Color(0xFF2EA05E);
+  static const Color primaryDark = Color(0xFF0F5232);
+  static const Color primarySurface = Color(0xFFE8F5EE);
+  static const Color primaryMid = Color(0xFFB2DFCB);
 
   static const Color white = Color(0xFFFFFFFF);
   static const Color offWhite = Color(0xFFF7FBF9);
@@ -58,13 +58,10 @@ class AppTheme {
         onSecondary: AppColors.white,
         surface: AppColors.white,
         onSurface: AppColors.grey800,
-        background: AppColors.background,
-        onBackground: AppColors.grey800,
         error: AppColors.error,
       ),
       scaffoldBackgroundColor: AppColors.background,
 
-      // ─── AppBar ──────────────────────────────────────────
       appBarTheme: const AppBarTheme(
         backgroundColor: AppColors.white,
         foregroundColor: AppColors.grey800,
@@ -81,7 +78,6 @@ class AppTheme {
         ),
       ),
 
-      // ─── Card ────────────────────────────────────────────
       cardTheme: CardThemeData(
         color: AppColors.white,
         elevation: 0,
@@ -91,7 +87,6 @@ class AppTheme {
         ),
       ),
 
-      // ─── Input ───────────────────────────────────────────
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: AppColors.grey100,
@@ -116,7 +111,6 @@ class AppTheme {
         labelStyle: const TextStyle(color: AppColors.grey500, fontSize: 15),
       ),
 
-      // ─── ElevatedButton ──────────────────────────────────
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.primary,
@@ -134,7 +128,6 @@ class AppTheme {
         ),
       ),
 
-      // ─── TextButton ──────────────────────────────────────
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: AppColors.primary,
@@ -146,7 +139,6 @@ class AppTheme {
         ),
       ),
 
-      // ─── ListTile ────────────────────────────────────────
       listTileTheme: const ListTileThemeData(
         contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         shape: RoundedRectangleBorder(
@@ -154,14 +146,12 @@ class AppTheme {
         ),
       ),
 
-      // ─── Divider ─────────────────────────────────────────
       dividerTheme: const DividerThemeData(
         color: AppColors.grey200,
         thickness: 1,
         space: 1,
       ),
 
-      // ─── Text ────────────────────────────────────────────
       textTheme: const TextTheme(
         displayLarge: TextStyle(fontSize: 32, fontWeight: FontWeight.w800, color: AppColors.grey800),
         displayMedium: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: AppColors.grey800),
@@ -179,7 +169,6 @@ class AppTheme {
         labelSmall: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: AppColors.grey500),
       ),
 
-      // ─── BottomNavigationBar ─────────────────────────────
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
         backgroundColor: AppColors.white,
         selectedItemColor: AppColors.primary,
@@ -190,7 +179,6 @@ class AppTheme {
         type: BottomNavigationBarType.fixed,
       ),
 
-      // ─── NavigationBar (Material 3) ───────────────────────
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: AppColors.white,
         indicatorColor: AppColors.primarySurface,
@@ -218,7 +206,6 @@ class AppTheme {
         }),
       ),
 
-      // ─── Chip ────────────────────────────────────────────
       chipTheme: ChipThemeData(
         backgroundColor: AppColors.grey100,
         selectedColor: AppColors.primarySurface,
@@ -226,14 +213,12 @@ class AppTheme {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
 
-      // ─── FAB ─────────────────────────────────────────────
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
         elevation: 4,
       ),
 
-      // ─── SnackBar ────────────────────────────────────────
       snackBarTheme: SnackBarThemeData(
         backgroundColor: AppColors.grey800,
         contentTextStyle: const TextStyle(fontFamily: 'Nunito', color: AppColors.white),

@@ -24,7 +24,9 @@ class UserModel {
         isAdmin: json['is_admin'] ?? false,
         status: json['status'] ?? 'pending',
         fcmToken: json['fcm_token'],
-        createdAt: json['created_at'] != null ? DateTime.tryParse(json['created_at']) : null,
+        createdAt: json['created_at'] != null
+            ? DateTime.tryParse(json['created_at'])
+            : null,
       );
 
   Map<String, dynamic> toJson() => {
@@ -39,8 +41,12 @@ class UserModel {
 
   String get initials {
     final parts = fullName.trim().split(' ');
-    if (parts.length >= 2) return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
-    if (parts.isNotEmpty && parts[0].isNotEmpty) return parts[0][0].toUpperCase();
+    if (parts.length >= 2) {
+      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+    }
+    if (parts.isNotEmpty && parts[0].isNotEmpty) {
+      return parts[0][0].toUpperCase();
+    }
     return '?';
   }
 
@@ -55,7 +61,8 @@ class UserModel {
     bool? isAdmin,
     String? status,
     String? fcmToken,
-  }) => UserModel(
+  }) =>
+      UserModel(
         id: id ?? this.id,
         fullName: fullName ?? this.fullName,
         email: email ?? this.email,
