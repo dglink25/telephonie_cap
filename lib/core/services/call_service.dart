@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart'
+    if (dart.library.html) '../stubs/webrtc_stub.dart';
 import '../api/api_client.dart';
 import '../websocket/websocket_service.dart';
 import 'ringtone_service.dart';
@@ -22,7 +22,7 @@ class CallService extends ChangeNotifier {
   CallState _state = CallState.idle;
   int? _currentCallId;
   int? _currentConversationId;
-  String _callType = 'audio'; // audio | video
+  String _callType = 'audio';
   Map<String, dynamic>? _incomingCallData;
 
   // ── WebRTC ───────────────────────────────────────────────────
@@ -36,6 +36,10 @@ class CallService extends ChangeNotifier {
   Function(Map<String, dynamic>)? onIncomingCall;
   Function(String status)? onCallStatusChanged;
 
+  // ICE candidate queue for race condition fix
+  final List<RTCIceCandidate> _pendingCandidates = [];
+  bool _remoteDescriptionSet = false;
+
   // ── Getters ──────────────────────────────────────────────────
   CallState get state => _state;
   int? get currentCallId => _currentCallId;
@@ -44,17 +48,10 @@ class CallService extends ChangeNotifier {
   MediaStream? get localStream => _localStream;
   MediaStream? get remoteStream => _remoteStream;
 
-  // ── Configuration STUN/TURN ──────────────────────────────────
   static const Map<String, dynamic> _iceConfig = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
       {'urls': 'stun:stun1.l.google.com:19302'},
-      // Ajoutez votre serveur TURN pour les environnements NAT stricts
-      // {
-      //   'urls': 'turn:your-turn-server.com:3478',
-      //   'username': 'user',
-      //   'credential': 'pass',
-      // },
     ],
     'sdpSemantics': 'unified-plan',
   };
@@ -63,9 +60,9 @@ class CallService extends ChangeNotifier {
   void listenToConversation(int conversationId) {
     _currentConversationId = conversationId;
     _ws.subscribeToConversation(conversationId, events: {
-      'call.initiated':     _onCallInitiated,
-      'call.status.updated': _onCallStatusUpdated,
-      'call.signal':        _onCallSignal,
+      'call.initiated': _onCallInitiated,
+      'call.status': _onCallStatusUpdated,
+      'call.signal': _onCallSignal,
     });
   }
 
@@ -82,22 +79,23 @@ class CallService extends ChangeNotifier {
     try {
       _callType = type;
       _currentConversationId = conversationId;
+      _pendingCandidates.clear();
+      _remoteDescriptionSet = false;
 
-      // Médias locaux
-      await _setupLocalStream(video: type == 'video');
+      if (!kIsWeb) {
+        await _setupLocalStream(video: type == 'video');
+      }
 
-      // Créer l'appel côté serveur
       final response = await _api.initiateCall(conversationId, type);
       final callData = response.data as Map<String, dynamic>;
-
-      _currentCallId = callData['id'];
+      _currentCallId = callData['id'] as int;
       _setState(CallState.calling);
 
-      // Sonnerie sortante (tonalité d'attente)
-      await _ringtone.startDialingTone();
-
-      // Créer la connexion WebRTC et générer l'offre SDP
-      await _setupPeerConnection(conversationId, currentUserId, isInitiator: true);
+      if (!kIsWeb) {
+        await _ringtone.startDialingTone();
+        await _setupPeerConnection(
+            conversationId, currentUserId, isInitiator: true);
+      }
 
       return callData;
     } catch (e) {
@@ -108,23 +106,26 @@ class CallService extends ChangeNotifier {
   }
 
   // ── Répondre à un appel ──────────────────────────────────────
-  Future<bool> answerCall(int callId, int conversationId, int currentUserId) async {
+  Future<bool> answerCall(
+      int callId, int conversationId, int currentUserId) async {
     try {
       _currentCallId = callId;
       _currentConversationId = conversationId;
+      _pendingCandidates.clear();
+      _remoteDescriptionSet = false;
 
-      // Arrêter la sonnerie
-      await _ringtone.stopRinging();
+      if (!kIsWeb) {
+        await _ringtone.stopRinging();
+        await _setupLocalStream(video: _callType == 'video');
+      }
 
-      // Médias locaux
-      await _setupLocalStream(video: _callType == 'video');
-
-      // Répondre côté serveur
       await _api.answerCall(callId);
       _setState(CallState.active);
 
-      // Créer la connexion WebRTC (récepteur)
-      await _setupPeerConnection(conversationId, currentUserId, isInitiator: false);
+      if (!kIsWeb) {
+        await _setupPeerConnection(
+            conversationId, currentUserId, isInitiator: false);
+      }
 
       return true;
     } catch (e) {
@@ -137,7 +138,7 @@ class CallService extends ChangeNotifier {
   // ── Rejeter un appel ─────────────────────────────────────────
   Future<void> rejectCall(int callId) async {
     try {
-      await _ringtone.stopRinging();
+      if (!kIsWeb) await _ringtone.stopRinging();
       await _api.rejectCall(callId);
       _incomingCallData = null;
       _setState(CallState.idle);
@@ -149,7 +150,7 @@ class CallService extends ChangeNotifier {
   // ── Terminer un appel ─────────────────────────────────────────
   Future<void> endCall() async {
     try {
-      await _ringtone.stopRinging();
+      if (!kIsWeb) await _ringtone.stopRinging();
       if (_currentCallId != null) {
         await _api.endCall(_currentCallId!);
       }
@@ -160,15 +161,19 @@ class CallService extends ChangeNotifier {
     }
   }
 
+  // ── BUG FIX: Public method for signal routing from chat_page ──
+  void onCallSignalReceived(Map<String, dynamic> data) {
+    _onCallSignal(data);
+  }
+
   // ── Médias locaux ─────────────────────────────────────────────
   Future<void> _setupLocalStream({required bool video}) async {
-    final constraints = {
+    final constraints = <String, dynamic>{
       'audio': true,
       'video': video
           ? {'facingMode': 'user', 'width': 640, 'height': 480}
           : false,
     };
-
     _localStream = await navigator.mediaDevices.getUserMedia(constraints);
     onLocalStream?.call(_localStream!);
   }
@@ -181,12 +186,10 @@ class CallService extends ChangeNotifier {
   }) async {
     _peerConnection = await createPeerConnection(_iceConfig);
 
-    // Ajouter les tracks locaux
     _localStream?.getTracks().forEach((track) {
       _peerConnection!.addTrack(track, _localStream!);
     });
 
-    // Recevoir les tracks distants
     _peerConnection!.onTrack = (event) {
       if (event.streams.isNotEmpty) {
         _remoteStream = event.streams[0];
@@ -194,13 +197,13 @@ class CallService extends ChangeNotifier {
       }
     };
 
-    // Envoyer les ICE candidates via le serveur de signaling
     _peerConnection!.onIceCandidate = (candidate) async {
       if (_currentCallId == null) return;
+      if (candidate.candidate == null || candidate.candidate!.isEmpty) return;
       try {
         await _api.sendSignal(_currentCallId!, 'ice-candidate', {
-          'candidate':     candidate.candidate,
-          'sdpMid':        candidate.sdpMid,
+          'candidate': candidate.candidate,
+          'sdpMid': candidate.sdpMid,
           'sdpMLineIndex': candidate.sdpMLineIndex,
         });
       } catch (e) {
@@ -217,13 +220,11 @@ class CallService extends ChangeNotifier {
     };
 
     if (isInitiator) {
-      // Créer et envoyer l'offre SDP
       final offer = await _peerConnection!.createOffer();
       await _peerConnection!.setLocalDescription(offer);
-
       if (_currentCallId != null) {
         await _api.sendSignal(_currentCallId!, 'offer', {
-          'sdp':  offer.sdp,
+          'sdp': offer.sdp,
           'type': offer.type,
         });
       }
@@ -232,27 +233,25 @@ class CallService extends ChangeNotifier {
 
   // ── Gestionnaires d'événements WebSocket ─────────────────────
   void _onCallInitiated(Map<String, dynamic> data) {
-    _callType = data['type'] ?? 'audio';
+    _callType = data['type'] as String? ?? 'audio';
     _incomingCallData = data;
     _setState(CallState.ringing);
     onIncomingCall?.call(data);
-
-    // Déclencher la sonnerie
-    _ringtone.startRinging();
+    if (!kIsWeb) _ringtone.startRinging();
   }
 
   void _onCallStatusUpdated(Map<String, dynamic> data) {
-    final status = data['status'] as String;
+    final status = data['status'] as String? ?? '';
     onCallStatusChanged?.call(status);
 
     switch (status) {
       case 'active':
-        _ringtone.stopRinging();
+        if (!kIsWeb) _ringtone.stopRinging();
         _setState(CallState.active);
         break;
       case 'rejected':
       case 'ended':
-        _ringtone.stopRinging();
+        if (!kIsWeb) _ringtone.stopRinging();
         _cleanup();
         break;
     }
@@ -261,47 +260,63 @@ class CallService extends ChangeNotifier {
   Future<void> _onCallSignal(Map<String, dynamic> data) async {
     if (_peerConnection == null) return;
 
-    final signalType = data['signal_type'] as String;
-    final payload   = data['payload'] as Map<String, dynamic>;
+    final signalType = data['signal_type'] as String? ?? '';
+    final payload = data['payload'] as Map<String, dynamic>? ?? {};
 
     try {
       switch (signalType) {
         case 'offer':
-          final sdp = RTCSessionDescription(
-            payload['sdp'] as String,
-            payload['type'] as String,
+          await _peerConnection!.setRemoteDescription(
+            RTCSessionDescription(
+              payload['sdp'] as String,
+              payload['type'] as String,
+            ),
           );
-          await _peerConnection!.setRemoteDescription(sdp);
+          _remoteDescriptionSet = true;
+          for (final c in _pendingCandidates) {
+            await _peerConnection!.addCandidate(c);
+          }
+          _pendingCandidates.clear();
 
-          // Créer et envoyer la réponse SDP
           final answer = await _peerConnection!.createAnswer();
           await _peerConnection!.setLocalDescription(answer);
-
           if (_currentCallId != null) {
             await _api.sendSignal(_currentCallId!, 'answer', {
-              'sdp':  answer.sdp,
+              'sdp': answer.sdp,
               'type': answer.type,
             });
           }
           break;
 
         case 'answer':
-          final sdp = RTCSessionDescription(
-            payload['sdp'] as String,
-            payload['type'] as String,
+          await _peerConnection!.setRemoteDescription(
+            RTCSessionDescription(
+              payload['sdp'] as String,
+              payload['type'] as String,
+            ),
           );
-          await _peerConnection!.setRemoteDescription(sdp);
-          _ringtone.stopRinging();
+          _remoteDescriptionSet = true;
+          for (final c in _pendingCandidates) {
+            await _peerConnection!.addCandidate(c);
+          }
+          _pendingCandidates.clear();
+          if (!kIsWeb) _ringtone.stopRinging();
           _setState(CallState.active);
           break;
 
         case 'ice-candidate':
+          final candidateStr = payload['candidate'] as String?;
+          if (candidateStr == null || candidateStr.isEmpty) break;
           final candidate = RTCIceCandidate(
-            payload['candidate'] as String,
+            candidateStr,
             payload['sdpMid'] as String?,
             payload['sdpMLineIndex'] as int?,
           );
-          await _peerConnection!.addCandidate(candidate);
+          if (_remoteDescriptionSet) {
+            await _peerConnection!.addCandidate(candidate);
+          } else {
+            _pendingCandidates.add(candidate);
+          }
           break;
       }
     } catch (e) {
@@ -319,6 +334,7 @@ class CallService extends ChangeNotifier {
   }
 
   Future<void> switchCamera() async {
+    if (kIsWeb) return;
     final videoTracks = _localStream?.getVideoTracks();
     if (videoTracks != null && videoTracks.isNotEmpty) {
       await Helper.switchCamera(videoTracks.first);
@@ -331,16 +347,15 @@ class CallService extends ChangeNotifier {
       _localStream?.getTracks().forEach((t) => t.stop());
       await _localStream?.dispose();
       _localStream = null;
-
       await _remoteStream?.dispose();
       _remoteStream = null;
-
       await _peerConnection?.close();
       _peerConnection = null;
     } catch (e) {
       debugPrint('[Call] Cleanup error: $e');
     }
-
+    _pendingCandidates.clear();
+    _remoteDescriptionSet = false;
     _currentCallId = null;
     _incomingCallData = null;
     _setState(CallState.idle);

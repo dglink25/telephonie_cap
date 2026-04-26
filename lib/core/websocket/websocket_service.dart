@@ -1,4 +1,3 @@
-
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:pusher_channels_flutter/pusher_channels_flutter.dart';
@@ -17,20 +16,17 @@ class WebSocketService {
 
   final Map<String, PusherChannel> _channels = {};
 
-  // ── Initialisation ────────────────────────────────────────────
   Future<void> init(String authToken) async {
     _authToken = authToken;
     if (_initialized) return;
 
     try {
-      // pusher_channels_flutter >=2.1 ne supporte pas le paramètre nommé
-      // `host` directement dans init() — on passe par wsHost / wssHost.
       await _pusher.init(
         apiKey: AppConstants.reverbAppKey,
         cluster: 'mt1',
-        wsHost: AppConstants.reverbHost,
-        wsPort: AppConstants.reverbPort,
-        wssPort: AppConstants.reverbPort,
+        //host: AppConstants.reverbHost,
+        //port: AppConstants.reverbPort,
+      
         useTLS: AppConstants.reverbScheme == 'https',
         authEndpoint:
             '${AppConstants.baseUrl.replaceAll('/api', '')}/broadcasting/auth',
@@ -52,35 +48,32 @@ class WebSocketService {
 
       await _pusher.connect();
       _initialized = true;
-      debugPrint('[WS] Connecté à Reverb (${AppConstants.reverbHost})');
+      debugPrint('[WS] Connecté (${kIsWeb ? "web" : AppConstants.reverbHost})');
     } catch (e) {
       debugPrint('[WS] Init error: $e');
       rethrow;
     }
   }
 
-  // ── Canal de conversation privé ───────────────────────────────
   Future<void> subscribeToConversation(
     int conversationId, {
     required Map<String, EventCallback> events,
   }) async {
-    await _subscribePrivate('conversation.$conversationId', events: events);
+    await _subscribePresence('conversation.$conversationId', events: events);
   }
 
-  // ── Canal utilisateur personnel ───────────────────────────────
   Future<void> subscribeToUserChannel(
     int userId, {
     required Map<String, EventCallback> events,
   }) async {
-    await _subscribePrivate('user.$userId', events: events);
+    await _subscribePresence('user.$userId', events: events);
   }
 
-  // ── Abonnement générique à un canal privé ─────────────────────
-  Future<void> _subscribePrivate(
+  Future<void> _subscribePresence(
     String name, {
     required Map<String, EventCallback> events,
   }) async {
-    final channelName = 'private-$name';
+    final channelName = 'presence-$name';
     if (_channels.containsKey(channelName)) return;
 
     try {
@@ -112,13 +105,12 @@ class WebSocketService {
     }
   }
 
-  // ── Désabonnement ─────────────────────────────────────────────
   Future<void> unsubscribeFromConversation(int conversationId) async {
-    await _unsubscribe('private-conversation.$conversationId');
+    await _unsubscribe('presence-conversation.$conversationId');
   }
 
   Future<void> unsubscribeFromUserChannel(int userId) async {
-    await _unsubscribe('private-user.$userId');
+    await _unsubscribe('presence-user.$userId');
   }
 
   Future<void> _unsubscribe(String channelName) async {
@@ -132,7 +124,6 @@ class WebSocketService {
     }
   }
 
-  // ── Déconnexion ───────────────────────────────────────────────
   Future<void> disconnect() async {
     try {
       for (final name in _channels.keys.toList()) {

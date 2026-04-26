@@ -1,3 +1,4 @@
+// lib/shared/models/user_model.dart
 class UserModel {
   final int id;
   final String fullName;
@@ -19,7 +20,6 @@ class UserModel {
         id: json['id'] as int,
         fullName: json['full_name'] as String? ?? '',
         email: json['email'] as String? ?? '',
-        // Accepte phone_number ou phoneNumber depuis l'API
         phoneNumber: json['phone_number'] as String?,
         status: json['status'] as String?,
         isAdmin: json['is_admin'] as bool? ?? false,
@@ -33,6 +33,18 @@ class UserModel {
         'status': status,
         'is_admin': isAdmin,
       };
+
+  // BUG FIX: Added missing initials getter used in home_page.dart
+  String get initials {
+    final parts = fullName.trim().split(' ');
+    if (parts.length >= 2 && parts[0].isNotEmpty && parts[1].isNotEmpty) {
+      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+    }
+    if (parts.isNotEmpty && parts[0].isNotEmpty) {
+      return parts[0][0].toUpperCase();
+    }
+    return '?';
+  }
 
   UserModel copyWith({
     int? id,

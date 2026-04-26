@@ -14,19 +14,31 @@ class ConversationsNotifier
     state = const AsyncLoading();
     try {
       final response = await _api.getConversations();
-      final list = (response.data as List)
-          .map((e) => ConversationModel.fromJson(e))
+      final data = response.data;
+      List<dynamic> list;
+      // BUG FIX: API may return paginated or plain list
+      if (data is Map && data.containsKey('data')) {
+        list = data['data'] as List<dynamic>;
+      } else if (data is List) {
+        list = data;
+      } else {
+        list = [];
+      }
+      final conversations = list
+          .map((e) => ConversationModel.fromJson(e as Map<String, dynamic>))
           .toList();
-      state = AsyncData(list);
+      state = AsyncData(conversations);
     } catch (e, s) {
       state = AsyncError(e, s);
     }
   }
 
+  // BUG FIX: Matches fixed ApiClient.startDirectConversation(int userId)
   Future<ConversationModel?> startDirect(int userId) async {
     try {
       final response = await _api.startDirectConversation(userId);
-      final conv = ConversationModel.fromJson(response.data);
+      final conv = ConversationModel.fromJson(
+          response.data as Map<String, dynamic>);
       await load();
       return conv;
     } catch (_) {
@@ -38,16 +50,7 @@ class ConversationsNotifier
     state.whenData((convs) {
       final updated = convs.map((c) {
         if (c.id == conversationId) {
-          return ConversationModel(
-            id: c.id,
-            type: c.type,
-            groupId: c.groupId,
-            group: c.group,
-            participants: c.participants,
-            lastMessage: c.lastMessage,
-            lastMessageAt: c.lastMessageAt,
-            lastReadAt: DateTime.now(),
-          );
+          return c.copyWith(lastReadAt: DateTime.now());
         }
         return c;
       }).toList();

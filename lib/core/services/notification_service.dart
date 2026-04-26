@@ -5,6 +5,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../api/api_client.dart';
 
+/// Top-level handler for background FCM messages (required by Firebase)
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  debugPrint('[FCM Background] ${message.messageId}');
+}
+
 /// Gère les notifications push FCM et les notifications locales.
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -19,14 +25,22 @@ class NotificationService {
   Function(Map<String, dynamic> data)? onMessageTap;
   Function(Map<String, dynamic> data)? onIncomingCallNotification;
 
+  bool _initialized = false;
+
   // ── Initialisation ─────────────────────────────────────────────
   Future<void> init() async {
-    // Demander les permissions iOS
+    if (_initialized) return;
+    _initialized = true;
+
+    // Register background handler
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+    // Demander les permissions iOS/Android 13+
     await _fcm.requestPermission(
       alert: true,
       badge: true,
       sound: true,
-      criticalAlert: true, // Pour les appels (nécessite entitlement Apple)
+      criticalAlert: false,
     );
 
     // Configurer les canaux Android
@@ -46,6 +60,7 @@ class NotificationService {
         iOS: iosSettings,
       ),
       onDidReceiveNotificationResponse: _onNotificationTap,
+      onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationTap,
     );
 
     // Écouter les messages FCM en premier plan
@@ -53,6 +68,12 @@ class NotificationService {
 
     // Écouter les taps sur notifications en arrière-plan
     FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
+
+    // Vérifier si l'app a été ouverte via une notification
+    final initialMessage = await _fcm.getInitialMessage();
+    if (initialMessage != null) {
+      _handleNotificationTap(initialMessage);
+    }
 
     // Envoyer le token FCM au serveur
     await _registerFcmToken();
@@ -72,16 +93,14 @@ class NotificationService {
       'Messages',
       description: 'Notifications de nouveaux messages',
       importance: Importance.high,
-      sound: RawResourceAndroidNotificationSound('default'),
       enableVibration: true,
     );
 
     const callsChannel = AndroidNotificationChannel(
       'calls',
       'Appels entrants',
-      description: 'Notifications d\'appels entrants',
+      description: "Notifications d'appels entrants",
       importance: Importance.max,
-      sound: RawResourceAndroidNotificationSound('call_ringtone'),
       enableVibration: true,
       playSound: true,
     );
@@ -96,8 +115,9 @@ class NotificationService {
 
   // ── Enregistrement du token FCM ────────────────────────────────
   Future<void> _registerFcmToken() async {
+    if (kIsWeb) return; // FCM token not available on web in same way
     try {
-      String? token = await _fcm.getToken();
+      final token = await _fcm.getToken();
       if (token != null) {
         await ApiClient().updateFcmToken(token);
         debugPrint('[FCM] Token enregistré');
@@ -110,23 +130,22 @@ class NotificationService {
   // ── Message en premier plan ────────────────────────────────────
   void _handleForegroundMessage(RemoteMessage message) {
     final data = message.data;
-    final type = data['type'];
+    final type = data['type'] as String?;
 
     if (type == 'incoming_call') {
-      // Appel entrant → notification haute priorité
       _showCallNotification(
-        callId:      data['call_id'] ?? '',
-        callerName:  data['caller_name'] ?? 'Appel entrant',
+        callId: data['call_id'] ?? '',
+        callerName: data['caller_name'] ?? 'Appel entrant',
         callerPhone: data['caller_phone'] ?? '',
-        callType:    data['call_type'] ?? 'audio',
-        convId:      data['conversation_id'] ?? '',
+        callType: data['call_type'] ?? 'audio',
+        convId: data['conversation_id'] ?? '',
       );
       onIncomingCallNotification?.call(data);
     } else if (type == 'new_message') {
       _showMessageNotification(
-        title: message.notification?.title ?? data['sender_name'] ?? 'Message',
-        body:  message.notification?.body  ?? data['body'] ?? '',
-        data:  data,
+        title: message.notification?.title ?? data['sender_name'] as String? ?? 'Message',
+        body: message.notification?.body ?? data['body'] as String? ?? '',
+        data: data,
       );
     }
   }
@@ -143,6 +162,12 @@ class NotificationService {
         onMessageTap?.call(data);
       } catch (_) {}
     }
+  }
+
+  @pragma('vm:entry-point')
+  static void _onBackgroundNotificationTap(NotificationResponse response) {
+    // Handle background tap — can't use instance methods here
+    debugPrint('[Notif] Background tap: ${response.payload}');
   }
 
   // ── Afficher notification de message ──────────────────────────
@@ -189,10 +214,9 @@ class NotificationService {
       'Appels entrants',
       importance: Importance.max,
       priority: Priority.max,
-      fullScreenIntent: true,       // Afficher en plein écran
-      ongoing: true,                // Non-dismissible tant que l'appel est actif
+      fullScreenIntent: true,
+      ongoing: true,
       icon: '@mipmap/ic_launcher',
-      sound: const RawResourceAndroidNotificationSound('call_ringtone'),
       actions: [
         const AndroidNotificationAction(
           'reject_call',
@@ -214,7 +238,6 @@ class NotificationService {
       presentBadge: true,
       presentSound: true,
       interruptionLevel: InterruptionLevel.critical,
-      categoryIdentifier: 'CALL_INVITE',
     );
 
     await _localNotifs.show(
@@ -223,22 +246,20 @@ class NotificationService {
       '$callTypeLabel entrant...',
       NotificationDetails(android: androidDetails, iOS: iosDetails),
       payload: jsonEncode({
-        'type':            'incoming_call',
-        'call_id':         callId,
+        'type': 'incoming_call',
+        'call_id': callId,
         'conversation_id': convId,
-        'caller_name':     callerName,
-        'caller_phone':    callerPhone,
-        'call_type':       callType,
+        'caller_name': callerName,
+        'caller_phone': callerPhone,
+        'call_type': callType,
       }),
     );
   }
-
 
   Future<void> cancelCallNotification(int callId) async {
     await _localNotifs.cancel(callId);
   }
 
-  /// Annuler toutes les notifications.
   Future<void> cancelAll() async {
     await _localNotifs.cancelAll();
   }

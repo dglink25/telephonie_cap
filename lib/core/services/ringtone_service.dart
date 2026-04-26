@@ -1,3 +1,4 @@
+// lib/core/services/ringtone_service.dart
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:vibration/vibration.dart';
@@ -17,25 +18,22 @@ class RingtoneService {
     _isRinging = true;
 
     try {
-      // Jouer le son de sonnerie en boucle
       await _player.setReleaseMode(ReleaseMode.loop);
       await _player.setVolume(1.0);
-      // Fichier assets/audio/ringtone.mp3 à placer dans le projet
       await _player.play(AssetSource('audio/ringtone.mp3'));
     } catch (e) {
       debugPrint('[Ringtone] Audio error: $e');
     }
 
-    // Vibration en pattern (appel entrant)
     _startVibration();
   }
 
   void _startVibration() async {
     try {
-      final hasVibrator = await Vibration.hasVibrator() ?? false;
-      if (!hasVibrator) return;
+      // BUG FIX: vibration ^2.0.0 API — use hasVibrator() properly
+      final hasVibrator = await Vibration.hasVibrator();
+      if (hasVibrator != true) return;
 
-      // Pattern : 500ms ON, 1000ms OFF, répété
       while (_isRinging) {
         await Vibration.vibrate(duration: 800);
         await Future.delayed(const Duration(milliseconds: 1200));

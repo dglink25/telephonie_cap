@@ -1,3 +1,4 @@
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -75,16 +76,9 @@ class ApiClient {
   // ─── Conversations ────────────────────────────────────────────
   Future<Response> getConversations() => _dio.get('/conversations');
 
-  /// Démarre une conversation directe.
-  /// Fournissez [userId] OU [phoneNumber], pas les deux.
-  Future<Response> startDirectConversation({
-    int? userId,
-    String? phoneNumber,
-  }) =>
-      _dio.post('/conversations/direct', data: {
-        if (userId != null) 'user_id': userId,
-        if (phoneNumber != null) 'phone_number': phoneNumber,
-      });
+  /// FIX: Only accepts userId (int) — matches backend validation
+  Future<Response> startDirectConversation(int userId) =>
+      _dio.post('/conversations/direct', data: {'user_id': userId});
 
   Future<Response> getConversation(int id) => _dio.get('/conversations/$id');
 
@@ -102,10 +96,10 @@ class ApiClient {
     int conversationId, {
     String? body,
     required String type,
-    dynamic file,
+    MultipartFile? file,
   }) async {
     final formData = FormData.fromMap({
-      if (body != null) 'body': body,
+      if (body != null && body.isNotEmpty) 'body': body,
       'type': type,
       if (file != null) 'file': file,
     });
@@ -167,8 +161,7 @@ class ApiClient {
       _dio.post('/conversations/$conversationId/calls',
           data: {'type': type});
 
-  Future<Response> initiateCallByPhone(
-          String phoneNumber, String type) =>
+  Future<Response> initiateCallByPhone(String phoneNumber, String type) =>
       _dio.post('/calls/direct',
           data: {'phone_number': phoneNumber, 'type': type});
 

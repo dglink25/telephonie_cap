@@ -2,18 +2,14 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/api/auth_storage.dart';
-import '../../../core/api/websocket_service.dart';
+import '../../../core/websocket/websocket_service.dart';
 import '../../../shared/models/user_model.dart';
 
 // ─── Parseur d'erreurs centralisé ─────────────────────────────
-//
-// Lit la réponse Dio et retourne un message humain lisible.
-// Couvre : timeout réseau, 401, 403, 422 (validation Laravel), 429, 5xx.
 String parseDioError(Object e) {
   if (e is DioException) {
     final response = e.response;
 
-    // Pas de réponse → problème réseau/timeout
     if (response == null) {
       switch (e.type) {
         case DioExceptionType.connectionTimeout:
@@ -30,12 +26,8 @@ String parseDioError(Object e) {
     final data = response.data;
     final status = response.statusCode ?? 0;
 
-    // 401 — non authentifié
-    if (status == 401) {
-      return 'Session expirée. Veuillez vous reconnecter.';
-    }
+    if (status == 401) return 'Session expirée. Veuillez vous reconnecter.';
 
-    // 403 — compte inactif / suspendu / accès refusé
     if (status == 403) {
       if (data is Map && data['message'] is String) {
         return data['message'] as String;
@@ -43,12 +35,10 @@ String parseDioError(Object e) {
       return 'Accès refusé. Contactez un administrateur.';
     }
 
-    // 422 — erreur de validation Laravel
     if (status == 422) {
       if (data is Map) {
         final errors = data['errors'];
         if (errors is Map && errors.isNotEmpty) {
- 
           final firstList = errors.values.firstOrNull;
           if (firstList is List && firstList.isNotEmpty) {
             return firstList.first.toString();
@@ -59,17 +49,14 @@ String parseDioError(Object e) {
       return 'Données invalides. Vérifiez les champs saisis.';
     }
 
-    // 429 — trop de tentatives
     if (status == 429) {
       return 'Trop de tentatives. Réessayez dans quelques minutes.';
     }
 
-    // 5xx — erreur serveur
     if (status >= 500) {
       return 'Erreur serveur ($status). Réessayez dans quelques instants.';
     }
 
-    // Autre code avec message API lisible
     if (data is Map && data['message'] is String) {
       return data['message'] as String;
     }
@@ -133,8 +120,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Connexion — retourne true si succès, false sinon.
-  /// En cas d'échec, [state.error] contient le message précis.
   Future<bool> login(String email, String password) async {
     state = state.copyWith(isLoading: true, error: null);
     try {
@@ -177,8 +162,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState();
   }
 
-  /// Création de compte depuis invitation.
-  /// Retourne true si succès, false sinon (+ [state.error] rempli).
   Future<bool> completeProfile(
     String token,
     String fullName,
