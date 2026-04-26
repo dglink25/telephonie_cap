@@ -19,23 +19,29 @@ final appRouterProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     initialLocation: '/login',
     debugLogDiagnostics: false,
+
     redirect: (context, state) {
-      final isLoggedIn = authState.isAuthenticated;
-      final isLoginRoute = state.matchedLocation == '/login';
-      final isInviteRoute = state.matchedLocation.startsWith('/invite/');
+      final isLoggedIn  = authState.isAuthenticated;
+      final loc         = state.matchedLocation;
+      final isLoginRoute  = loc == '/login';
+      final isInviteRoute = loc.startsWith('/invite/');
 
       if (isInviteRoute) return null;
+
       if (!isLoggedIn && !isLoginRoute) return '/login';
-      if (isLoggedIn && isLoginRoute) return '/home';
+      if (isLoggedIn  &&  isLoginRoute) return '/home';
       return null;
     },
+
     routes: [
-      // ─── Auth ────────────────────────────────────────────
+      // ─── Auth ──────────────────────────────────────────────
       GoRoute(
         path: '/login',
         name: 'login',
         builder: (context, state) => const LoginPage(),
       ),
+
+      // ─── Invitation (deep link + web) ──────────────────────
       GoRoute(
         path: '/invite/:token',
         name: 'invite',
@@ -44,7 +50,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         ),
       ),
 
-      // ─── Main Shell (NavigationBar) ──────────────────────
+      // ─── Shell principal (NavigationBar) ───────────────────
       ShellRoute(
         builder: (context, state, child) => HomePage(child: child),
         routes: [
@@ -71,7 +77,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         ],
       ),
 
-      // ─── Chat (hors shell) ───────────────────────────────
+      // ─── Chat (hors shell) ─────────────────────────────────
       GoRoute(
         path: '/conversations/:id',
         name: 'chat',
@@ -80,7 +86,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         ),
       ),
 
-      // ─── Call (hors shell) ───────────────────────────────
+      // ─── Appel (hors shell) ────────────────────────────────
       GoRoute(
         path: '/calls/:id',
         name: 'call',
@@ -90,9 +96,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
     ],
+
     errorBuilder: (context, state) => Scaffold(
       body: Center(
-        child: Text('Page introuvable: ${state.error}'),
+        child: Text('Page introuvable : ${state.error}'),
       ),
     ),
   );

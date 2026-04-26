@@ -77,13 +77,18 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+
     final success = await ref.read(authProvider.notifier).completeProfile(
           widget.token,
           _nameController.text.trim(),
           _passwordController.text,
           _confirmController.text,
         );
-    if (success && mounted) context.go('/home');
+
+    if (success && mounted) {
+      // Redirection automatique vers le dashboard principal
+      context.go('/home');
+    }
   }
 
   @override
@@ -109,7 +114,7 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
           CircularProgressIndicator(color: AppColors.primary),
           SizedBox(height: 16),
           Text(
-            'Vérification du lien…',
+            'Vérification du lien...',
             style: TextStyle(
                 color: AppColors.grey500,
                 fontFamily: 'Nunito',
@@ -213,8 +218,6 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                 child: Column(
                   children: [
                     const SizedBox(height: 24),
-
-                    // Logo
                     _buildLogo(),
                     const SizedBox(height: 28),
 
@@ -237,7 +240,6 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Title
                             const Text(
                               'Créer votre compte',
                               style: TextStyle(
@@ -273,8 +275,7 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                               decoration: BoxDecoration(
                                 color: AppColors.primarySurface,
                                 borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                    color: AppColors.primaryMid),
+                                border: Border.all(color: AppColors.primaryMid),
                               ),
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 16, vertical: 14),
@@ -324,10 +325,8 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                               textCapitalization: TextCapitalization.words,
                               decoration: const InputDecoration(
                                 hintText: 'Jean Dupont',
-                                prefixIcon: Icon(
-                                    Icons.person_outline_rounded,
-                                    color: AppColors.grey400,
-                                    size: 20),
+                                prefixIcon: Icon(Icons.person_outline_rounded,
+                                    color: AppColors.grey400, size: 20),
                               ),
                               validator: (v) =>
                                   (v == null || v.trim().isEmpty)
@@ -346,10 +345,8 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                               textInputAction: TextInputAction.next,
                               decoration: InputDecoration(
                                 hintText: '••••••••',
-                                prefixIcon: const Icon(
-                                    Icons.lock_outline_rounded,
-                                    color: AppColors.grey400,
-                                    size: 20),
+                                prefixIcon: const Icon(Icons.lock_outline_rounded,
+                                    color: AppColors.grey400, size: 20),
                                 suffixIcon: IconButton(
                                   icon: Icon(
                                     _obscurePassword
@@ -358,17 +355,15 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                                     color: AppColors.grey400,
                                     size: 20,
                                   ),
-                                  onPressed: () => setState(() =>
-                                      _obscurePassword = !_obscurePassword),
+                                  onPressed: () => setState(
+                                      () => _obscurePassword = !_obscurePassword),
                                 ),
                               ),
                               validator: (v) {
                                 if (v == null || v.isEmpty) {
                                   return 'Mot de passe requis';
                                 }
-                                if (v.length < 8) {
-                                  return 'Minimum 8 caractères';
-                                }
+                                if (v.length < 8) return 'Minimum 8 caractères';
                                 return null;
                               },
                             ),
@@ -385,10 +380,8 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                               onFieldSubmitted: (_) => _submit(),
                               decoration: InputDecoration(
                                 hintText: '••••••••',
-                                prefixIcon: const Icon(
-                                    Icons.lock_outline_rounded,
-                                    color: AppColors.grey400,
-                                    size: 20),
+                                prefixIcon: const Icon(Icons.lock_outline_rounded,
+                                    color: AppColors.grey400, size: 20),
                                 suffixIcon: IconButton(
                                   icon: Icon(
                                     _obscureConfirm
@@ -397,8 +390,8 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                                     color: AppColors.grey400,
                                     size: 20,
                                   ),
-                                  onPressed: () => setState(() =>
-                                      _obscureConfirm = !_obscureConfirm),
+                                  onPressed: () => setState(
+                                      () => _obscureConfirm = !_obscureConfirm),
                                 ),
                               ),
                               validator: (v) {
@@ -418,8 +411,29 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                             SizedBox(
                               width: double.infinity,
                               height: 54,
-                              child: ElevatedButton(
+                              child: ElevatedButton.icon(
                                 onPressed: auth.isLoading ? null : _submit,
+                                icon: auth.isLoading
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2.5,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(Icons.check_circle_outline_rounded,
+                                        size: 20),
+                                label: Text(
+                                  auth.isLoading
+                                      ? 'Création du compte...'
+                                      : 'Créer mon compte',
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w700,
+                                    fontFamily: 'Nunito',
+                                  ),
+                                ),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: AppColors.primary,
                                   foregroundColor: Colors.white,
@@ -428,32 +442,6 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
                                   ),
                                   elevation: 0,
                                 ),
-                                child: auth.isLoading
-                                    ? const SizedBox(
-                                        width: 22,
-                                        height: 22,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2.5,
-                                          color: Colors.white,
-                                        ),
-                                      )
-                                    : const Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        children: [
-                                          Icon(Icons.check_rounded,
-                                              size: 20),
-                                          SizedBox(width: 8),
-                                          Text(
-                                            'Créer mon compte',
-                                            style: TextStyle(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.w700,
-                                              fontFamily: 'Nunito',
-                                            ),
-                                          ),
-                                        ],
-                                      ),
                               ),
                             ),
                           ],
@@ -472,7 +460,6 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
     );
   }
 
-  // ── Helpers ──────────────────────────────────────────────────
   Widget _buildLogo() {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -483,8 +470,7 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
           decoration: BoxDecoration(
             color: Colors.white.withOpacity(0.2),
             borderRadius: BorderRadius.circular(14),
-            border:
-                Border.all(color: Colors.white.withOpacity(0.4)),
+            border: Border.all(color: Colors.white.withOpacity(0.4)),
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(13),
@@ -540,8 +526,7 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
       );
 
   Widget _buildErrorBanner(String error) => Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
           color: const Color(0xFFFEF2F2),
           borderRadius: BorderRadius.circular(12),
@@ -556,9 +541,7 @@ class _CompleteProfilePageState extends ConsumerState<CompleteProfilePage>
               child: Text(
                 error,
                 style: const TextStyle(
-                    color: AppColors.error,
-                    fontSize: 13,
-                    fontFamily: 'Nunito'),
+                    color: AppColors.error, fontSize: 13, fontFamily: 'Nunito'),
               ),
             ),
           ],

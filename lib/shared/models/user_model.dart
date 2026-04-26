@@ -5,6 +5,7 @@ class UserModel {
   final bool isAdmin;
   final String status;
   final String? fcmToken;
+  final String? phoneNumber;
   final DateTime? createdAt;
 
   const UserModel({
@@ -14,6 +15,7 @@ class UserModel {
     required this.isAdmin,
     required this.status,
     this.fcmToken,
+    this.phoneNumber,
     this.createdAt,
   });
 
@@ -24,6 +26,7 @@ class UserModel {
         isAdmin: json['is_admin'] ?? false,
         status: json['status'] ?? 'pending',
         fcmToken: json['fcm_token'],
+        phoneNumber: json['phone_number'],
         createdAt: json['created_at'] != null
             ? DateTime.tryParse(json['created_at'])
             : null,
@@ -36,6 +39,7 @@ class UserModel {
         'is_admin': isAdmin,
         'status': status,
         'fcm_token': fcmToken,
+        'phone_number': phoneNumber,
         'created_at': createdAt?.toIso8601String(),
       };
 
@@ -50,9 +54,18 @@ class UserModel {
     return '?';
   }
 
-  bool get isActive => status == 'active';
-  bool get isPending => status == 'pending';
+  bool get isActive    => status == 'active';
+  bool get isPending   => status == 'pending';
   bool get isSuspended => status == 'suspended';
+
+  /// Affiche le numéro sous forme lisible : 20 XX XX XX
+  String get formattedPhone {
+    if (phoneNumber == null || phoneNumber!.length != 8) return phoneNumber ?? '—';
+    return '${phoneNumber!.substring(0, 2)} '
+        '${phoneNumber!.substring(2, 4)} '
+        '${phoneNumber!.substring(4, 6)} '
+        '${phoneNumber!.substring(6, 8)}';
+  }
 
   UserModel copyWith({
     int? id,
@@ -61,6 +74,7 @@ class UserModel {
     bool? isAdmin,
     String? status,
     String? fcmToken,
+    String? phoneNumber,
   }) =>
       UserModel(
         id: id ?? this.id,
@@ -69,6 +83,7 @@ class UserModel {
         isAdmin: isAdmin ?? this.isAdmin,
         status: status ?? this.status,
         fcmToken: fcmToken ?? this.fcmToken,
+        phoneNumber: phoneNumber ?? this.phoneNumber,
         createdAt: createdAt,
       );
 }
