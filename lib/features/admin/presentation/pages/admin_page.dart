@@ -1,21 +1,26 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/api/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/models/models.dart';
 import '../../../../shared/models/user_model.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
+// Réutilise le parseur centralisé défini dans auth_provider.dart
+import '../../../auth/data/auth_provider.dart' show parseDioError;
 
 // ─── Providers ────────────────────────────────────────────────
 final adminUsersProvider = FutureProvider<List<UserModel>>((ref) async {
   final response = await ApiClient().adminGetUsers();
   final list = response.data;
   if (list is! List) return [];
-  return list.map((e) => UserModel.fromJson(e as Map<String, dynamic>)).toList();
+  return list
+      .map((e) => UserModel.fromJson(e as Map<String, dynamic>))
+      .toList();
 });
 
-final adminInvitationsProvider = FutureProvider<List<InvitationModel>>((ref) async {
+final adminInvitationsProvider =
+    FutureProvider<List<InvitationModel>>((ref) async {
   final response = await ApiClient().adminGetInvitations();
   final list = response.data;
   if (list is! List) return [];
@@ -91,23 +96,9 @@ class _UsersTab extends ConsumerWidget {
     return usersAsync.when(
       loading: () =>
           const Center(child: CircularProgressIndicator(color: AppColors.primary)),
-      error: (e, _) => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline_rounded,
-                color: AppColors.error, size: 40),
-            const SizedBox(height: 12),
-            Text('Erreur: $e',
-                style: const TextStyle(
-                    color: AppColors.grey500, fontFamily: 'Nunito')),
-            const SizedBox(height: 12),
-            TextButton(
-              onPressed: () => ref.invalidate(adminUsersProvider),
-              child: const Text('Réessayer'),
-            ),
-          ],
-        ),
+      error: (e, _) => _ErrorView(
+        message: parseDioError(e),
+        onRetry: () => ref.invalidate(adminUsersProvider),
       ),
       data: (users) => RefreshIndicator(
         color: AppColors.primary,
@@ -122,51 +113,93 @@ class _UsersTab extends ConsumerWidget {
                 padding: const EdgeInsets.all(16),
                 itemCount: users.length,
                 separatorBuilder: (_, __) => const SizedBox(height: 10),
-                itemBuilder: (context, index) => _UserCard(
-                  user: users[index],
-                  onStatusChange: (status) async {
-                    try {
-                      await ApiClient()
-                          .adminUpdateStatus(users[index].id, status);
-                      ref.invalidate(adminUsersProvider);
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                              content: Text('Statut mis à jour : $status')),
-                        );
-                      }
-                    } catch (_) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('Erreur lors de la mise à jour')),
-                        );
-                      }
-                    }
-                  },
-                  onDelete: () async {
-                    try {
-                      await ApiClient().adminDeleteUser(users[index].id);
-                      ref.invalidate(adminUsersProvider);
-                    } catch (_) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('Erreur lors de la suppression')),
-                        );
-                      }
-                    }
-                  },
-                ),
+                itemBuilder: (context, index) {
+                  final user = users[index];
+                  return _UserCard(
+                    user: user,
+                    onStatusChange: (status) =>
+                        _updateStatus(context, ref, user, status),
+                    onDelete: () => _confirmDeleteUser(context, ref, user),
+                  );
+                },
               ),
       ),
     );
   }
+
+  Future<void> _updateStatus(
+    BuildContext context,
+    WidgetRef ref,
+    UserModel user,
+    String status,
+  ) async {
+    try {
+      await ApiClient().adminUpdateStatus(user.id, status);
+      ref.invalidate(adminUsersProvider);
+      if (context.mounted) {
+        _showSuccess(context, 'Statut mis à jour : $status');
+      }
+    } catch (e) {
+      if (context.mounted) {
+        _showError(context, parseDioError(e));
+      }
+    }
+  }
+
+  /// Affiche la boîte de confirmation puis effectue la suppression.
+  /// Le callback est async et géré ici — plus de VoidCallback non-awaitable.
+  Future<void> _confirmDeleteUser(
+    BuildContext context,
+    WidgetRef ref,
+    UserModel user,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Supprimer l\'utilisateur ?',
+          style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Cette action est irréversible pour ${user.fullName}.',
+          style: const TextStyle(fontFamily: 'Nunito'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annuler'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Supprimer'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    if (!context.mounted) return;
+
+    try {
+      await ApiClient().adminDeleteUser(user.id);
+      ref.invalidate(adminUsersProvider);
+      if (context.mounted) {
+        _showSuccess(context, '${user.fullName} a été supprimé.');
+      }
+    } catch (e) {
+      if (context.mounted) {
+        _showError(context, parseDioError(e));
+      }
+    }
+  }
 }
 
+// ─── User Card ────────────────────────────────────────────────
 class _UserCard extends StatelessWidget {
   final UserModel user;
-  final Function(String) onStatusChange;
+  final void Function(String) onStatusChange;
   final VoidCallback onDelete;
 
   const _UserCard({
@@ -226,7 +259,7 @@ class _UserCard extends StatelessWidget {
                   ],
                 ),
                 Text(
-                  user.email,
+                  user.phone_number ?? 'Pas de numéro',
                   style: const TextStyle(
                     fontSize: 12,
                     color: AppColors.grey400,
@@ -244,7 +277,7 @@ class _UserCard extends StatelessWidget {
                   color: AppColors.grey400, size: 20),
               onSelected: (value) {
                 if (value == 'delete') {
-                  _confirmDelete(context);
+                  onDelete();
                 } else {
                   onStatusChange(value);
                 }
@@ -291,38 +324,6 @@ class _UserCard extends StatelessWidget {
                 ),
               ],
             ),
-        ],
-      ),
-    );
-  }
-
-  void _confirmDelete(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text(
-          'Supprimer l\'utilisateur?',
-          style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w700),
-        ),
-        content: Text(
-          'Cette action est irréversible pour ${user.fullName}.',
-          style: const TextStyle(fontFamily: 'Nunito'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Annuler'),
-          ),
-          ElevatedButton(
-            style:
-                ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () {
-              Navigator.pop(context);
-              onDelete();
-            },
-            child: const Text('Supprimer'),
-          ),
         ],
       ),
     );
@@ -402,8 +403,8 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
             ? const SizedBox(
                 width: 18,
                 height: 18,
-                child:
-                    CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
               )
             : const Icon(Icons.add),
         label: Text(
@@ -415,23 +416,9 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
       body: invitAsync.when(
         loading: () => const Center(
             child: CircularProgressIndicator(color: AppColors.primary)),
-        error: (e, _) => Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline_rounded,
-                  color: AppColors.error, size: 40),
-              const SizedBox(height: 12),
-              Text('Erreur: $e',
-                  style: const TextStyle(
-                      color: AppColors.grey500, fontFamily: 'Nunito')),
-              const SizedBox(height: 12),
-              TextButton(
-                onPressed: () => ref.invalidate(adminInvitationsProvider),
-                child: const Text('Réessayer'),
-              ),
-            ],
-          ),
+        error: (e, _) => _ErrorView(
+          message: parseDioError(e),
+          onRetry: () => ref.invalidate(adminInvitationsProvider),
         ),
         data: (invitations) {
           if (invitations.isEmpty) {
@@ -442,7 +429,7 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
                   Container(
                     width: 72,
                     height: 72,
-                    decoration: BoxDecoration(
+                    decoration: const BoxDecoration(
                       color: AppColors.primarySurface,
                       shape: BoxShape.circle,
                     ),
@@ -477,32 +464,13 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
             color: AppColors.primary,
             onRefresh: () async => ref.invalidate(adminInvitationsProvider),
             child: ListView.separated(
-              padding:
-                  const EdgeInsets.fromLTRB(16, 16, 16, 88), // space for FAB
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
               itemCount: invitations.length,
               separatorBuilder: (_, __) => const SizedBox(height: 10),
               itemBuilder: (context, index) => _InvitationCard(
                 invitation: invitations[index],
-                onDelete: () async {
-                  try {
-                    await ApiClient()
-                        .adminDeleteInvitation(invitations[index].id);
-                    ref.invalidate(adminInvitationsProvider);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Invitation supprimée')),
-                      );
-                    }
-                  } catch (_) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                            content:
-                                Text('Erreur lors de la suppression')),
-                      );
-                    }
-                  }
-                },
+                onDelete: () => _confirmDeleteInvitation(
+                    context, invitations[index]),
               ),
             ),
           );
@@ -511,116 +479,274 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
     );
   }
 
+  /// Confirmation + suppression de l'invitation.
+  /// Async du début à la fin — pas de contexte perdu entre dialog et appel API.
+  Future<void> _confirmDeleteInvitation(
+    BuildContext context,
+    InvitationModel invitation,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Supprimer l\'invitation ?',
+          style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'L\'invitation pour ${invitation.email} sera supprimée.',
+          style: const TextStyle(fontFamily: 'Nunito'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annuler'),
+          ),
+          ElevatedButton(
+            style:
+                ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Supprimer'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    if (!context.mounted) return;
+
+    try {
+      await ApiClient().adminDeleteInvitation(invitation.id);
+      ref.invalidate(adminInvitationsProvider);
+      if (context.mounted) {
+        _showSuccess(context, 'Invitation supprimée.');
+      }
+    } catch (e) {
+      if (context.mounted) {
+        _showError(context, parseDioError(e));
+      }
+    }
+  }
+
   void _showInviteDialog(BuildContext context) {
     final ctrl = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
     showDialog(
       context: context,
-      builder: (dialogCtx) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text(
-          'Inviter un utilisateur',
-          style: TextStyle(
-              fontFamily: 'Nunito', fontWeight: FontWeight.w800),
-        ),
-        content: Form(
-          key: formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Un email d\'invitation sera envoyé à cette adresse.',
-                style: TextStyle(
-                    color: AppColors.grey500,
-                    fontSize: 13,
-                    fontFamily: 'Nunito'),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: ctrl,
-                keyboardType: TextInputType.emailAddress,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  hintText: 'adresse@email.com',
-                  prefixIcon: Icon(Icons.email_outlined,
-                      color: AppColors.grey400, size: 20),
-                ),
-                validator: (v) {
-                  if (v == null || v.trim().isEmpty) return 'Email requis';
-                  if (!v.contains('@') || !v.contains('.')) {
-                    return 'Email invalide';
-                  }
-                  return null;
-                },
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogCtx),
-            child: const Text('Annuler'),
-          ),
-          ElevatedButton.icon(
-            icon: const Icon(Icons.send_rounded, size: 16),
-            label: const Text('Envoyer'),
-            onPressed: () async {
-              if (!formKey.currentState!.validate()) return;
-              Navigator.pop(dialogCtx);
+      // barrierDismissible = false empêche de fermer accidentellement pendant l'envoi
+      barrierDismissible: false,
+      builder: (dialogCtx) => _InviteDialog(
+        formKey: formKey,
+        ctrl: ctrl,
+        onConfirm: (email) => _sendInvitation(context, dialogCtx, email),
+        onCancel: () => Navigator.pop(dialogCtx),
+      ),
+    );
+  }
 
-              setState(() => _isSending = true);
-              try {
-                await ApiClient()
-                    .adminCreateInvitation(ctrl.text.trim());
-                // ✅ Refresh immédiat de la liste
-                ref.invalidate(adminInvitationsProvider);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          const Icon(Icons.check_circle_outline,
-                              color: Colors.white, size: 18),
-                          const SizedBox(width: 8),
-                          Text('Invitation envoyée à ${ctrl.text.trim()}'),
-                        ],
-                      ),
-                      backgroundColor: AppColors.primary,
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (mounted) {
-                  // Parse error message from API if available
-                  String errorMsg = 'Erreur lors de l\'envoi';
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          const Icon(Icons.error_outline,
-                              color: Colors.white, size: 18),
-                          const SizedBox(width: 8),
-                          Expanded(child: Text(errorMsg)),
-                        ],
-                      ),
-                      backgroundColor: AppColors.error,
-                    ),
-                  );
-                }
-              } finally {
-                if (mounted) setState(() => _isSending = false);
-              }
-            },
-          ),
-        ],
+  /// Envoi de l'invitation — le dialog reste ouvert pendant l'appel,
+  /// puis est fermé explicitement après succès ou erreur.
+  Future<void> _sendInvitation(
+    BuildContext pageContext,
+    BuildContext dialogCtx,
+    String email,
+  ) async {
+    setState(() => _isSending = true);
+    try {
+      await ApiClient().adminCreateInvitation(email);
+      ref.invalidate(adminInvitationsProvider);
+
+      // Ferme le dialog seulement après succès
+      if (dialogCtx.mounted) Navigator.pop(dialogCtx);
+
+      if (pageContext.mounted) {
+        _showSuccess(pageContext, 'Invitation envoyée à $email');
+      }
+    } on DioException catch (e) {
+      // L'erreur 422 "email déjà utilisé" doit s'afficher DANS le dialog
+      final msg = parseDioError(e);
+      if (dialogCtx.mounted) {
+        _showErrorInDialog(dialogCtx, msg);
+      }
+    } catch (e) {
+      if (dialogCtx.mounted) {
+        _showErrorInDialog(dialogCtx, 'Erreur inattendue. Réessayez.');
+      }
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
+  /// Affiche un message d'erreur en snackbar DANS le dialog (overlay local).
+  void _showErrorInDialog(BuildContext dialogCtx, String message) {
+    ScaffoldMessenger.of(dialogCtx).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.white, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(message,
+                  style: const TextStyle(fontFamily: 'Nunito')),
+            ),
+          ],
+        ),
+        backgroundColor: AppColors.error,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
 }
 
+// ─── Dialog d'invitation (widget séparé pour éviter setState sur dialog) ──
+class _InviteDialog extends StatefulWidget {
+  final GlobalKey<FormState> formKey;
+  final TextEditingController ctrl;
+  final Future<void> Function(String email) onConfirm;
+  final VoidCallback onCancel;
+
+  const _InviteDialog({
+    required this.formKey,
+    required this.ctrl,
+    required this.onConfirm,
+    required this.onCancel,
+  });
+
+  @override
+  State<_InviteDialog> createState() => _InviteDialogState();
+}
+
+class _InviteDialogState extends State<_InviteDialog> {
+  bool _loading = false;
+  String? _inlineError;
+
+  Future<void> _submit() async {
+    setState(() => _inlineError = null);
+    if (!widget.formKey.currentState!.validate()) return;
+
+    setState(() => _loading = true);
+    try {
+      await widget.onConfirm(widget.ctrl.text.trim());
+    } on DioException catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _inlineError = parseDioError(e);
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _inlineError = 'Erreur inattendue. Réessayez.';
+        });
+      }
+    }
+    // Ne pas setState loading=false ici : si succès, le dialog est déjà fermé
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: const Text(
+        'Inviter un utilisateur',
+        style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w800),
+      ),
+      content: Form(
+        key: widget.formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Un email d\'invitation sera envoyé à cette adresse.',
+              style: TextStyle(
+                  color: AppColors.grey500,
+                  fontSize: 13,
+                  fontFamily: 'Nunito'),
+            ),
+            const SizedBox(height: 16),
+
+            // Erreur inline sous le champ
+            if (_inlineError != null) ...[
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFECACA)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline_rounded,
+                        color: AppColors.error, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _inlineError!,
+                        style: const TextStyle(
+                          color: AppColors.error,
+                          fontSize: 12,
+                          fontFamily: 'Nunito',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+
+            TextFormField(
+              controller: widget.ctrl,
+              keyboardType: TextInputType.emailAddress,
+              autofocus: true,
+              enabled: !_loading,
+              decoration: const InputDecoration(
+                hintText: 'adresse@email.com',
+                prefixIcon: Icon(Icons.email_outlined,
+                    color: AppColors.grey400, size: 20),
+              ),
+              validator: (v) {
+                if (v == null || v.trim().isEmpty) return 'Email requis';
+                final trimmed = v.trim();
+                if (!trimmed.contains('@') || !trimmed.contains('.')) {
+                  return 'Email invalide';
+                }
+                return null;
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _loading ? null : widget.onCancel,
+          child: const Text('Annuler'),
+        ),
+        ElevatedButton.icon(
+          icon: _loading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : const Icon(Icons.send_rounded, size: 16),
+          label: Text(_loading ? 'Envoi...' : 'Envoyer'),
+          onPressed: _loading ? null : _submit,
+        ),
+      ],
+    );
+  }
+}
+
+// ─── Invitation Card ──────────────────────────────────────────
 class _InvitationCard extends StatelessWidget {
   final InvitationModel invitation;
   final VoidCallback onDelete;
@@ -736,12 +862,13 @@ class _InvitationCard extends StatelessWidget {
               ],
             ),
           ),
+          // Seules les invitations non utilisées peuvent être supprimées
           if (!invitation.isUsed)
             IconButton(
               icon: const Icon(Icons.delete_outline_rounded,
                   color: AppColors.error, size: 20),
               tooltip: 'Supprimer',
-              onPressed: () => _confirmDelete(context),
+              onPressed: onDelete,
             ),
         ],
       ),
@@ -754,38 +881,82 @@ class _InvitationCard extends StatelessWidget {
     if (diff.inHours < 24) return 'dans ${diff.inHours}h';
     return 'dans ${diff.inDays}j';
   }
+}
 
-  void _confirmDelete(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text(
-          'Supprimer l\'invitation ?',
-          style:
-              TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w700),
+// ─── Widgets utilitaires ──────────────────────────────────────
+
+class _ErrorView extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+
+  const _ErrorView({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline_rounded,
+                color: AppColors.error, size: 40),
+            const SizedBox(height: 12),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: AppColors.grey500, fontFamily: 'Nunito'),
+            ),
+            const SizedBox(height: 12),
+            TextButton.icon(
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('Réessayer'),
+              onPressed: onRetry,
+            ),
+          ],
         ),
-        content: Text(
-          'L\'invitation pour ${invitation.email} sera supprimée.',
-          style: const TextStyle(fontFamily: 'Nunito'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Annuler'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error),
-            onPressed: () {
-              Navigator.pop(context);
-              onDelete();
-            },
-            child: const Text('Supprimer'),
-          ),
-        ],
       ),
     );
   }
+}
+
+void _showSuccess(BuildContext context, String message) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Row(
+        children: [
+          const Icon(Icons.check_circle_outline, color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text(message,
+                  style: const TextStyle(fontFamily: 'Nunito'))),
+        ],
+      ),
+      backgroundColor: AppColors.primary,
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+  );
+}
+
+void _showError(BuildContext context, String message) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Row(
+        children: [
+          const Icon(Icons.error_outline, color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text(message,
+                  style: const TextStyle(fontFamily: 'Nunito'))),
+        ],
+      ),
+      backgroundColor: AppColors.error,
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+  );
 }

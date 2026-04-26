@@ -1,5 +1,6 @@
 class UserModel {
   final int id;
+  final String? phone_number;
   final String fullName;
   final String email;
   final bool isAdmin;
@@ -10,6 +11,7 @@ class UserModel {
 
   const UserModel({
     required this.id,
+    this.phone_number,
     required this.fullName,
     required this.email,
     required this.isAdmin,
@@ -21,6 +23,7 @@ class UserModel {
 
   factory UserModel.fromJson(Map<String, dynamic> json) => UserModel(
         id: json['id'],
+        phone_number: json['phone_number'],
         fullName: json['full_name'] ?? '',
         email: json['email'] ?? '',
         isAdmin: json['is_admin'] ?? false,
@@ -34,12 +37,12 @@ class UserModel {
 
   Map<String, dynamic> toJson() => {
         'id': id,
+        'phone_number': phone_number,
         'full_name': fullName,
         'email': email,
         'is_admin': isAdmin,
         'status': status,
         'fcm_token': fcmToken,
-        'phone_number': phoneNumber,
         'created_at': createdAt?.toIso8601String(),
       };
 
