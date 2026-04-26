@@ -24,9 +24,10 @@ class WebSocketService {
       await _pusher.init(
         apiKey: AppConstants.reverbAppKey,
         cluster: 'mt1',
-        //host: AppConstants.reverbHost,
-        //port: AppConstants.reverbPort,
-      
+        // FIX: Utiliser wsHost et wsPort pour pointer vers Reverb local
+        //wsHost: AppConstants.reverbHost,
+        //wsPort: AppConstants.reverbPort,
+        //wssPort: AppConstants.reverbPort,
         useTLS: AppConstants.reverbScheme == 'https',
         authEndpoint:
             '${AppConstants.baseUrl.replaceAll('/api', '')}/broadcasting/auth',
@@ -48,7 +49,7 @@ class WebSocketService {
 
       await _pusher.connect();
       _initialized = true;
-      debugPrint('[WS] Connecté (${kIsWeb ? "web" : AppConstants.reverbHost})');
+      debugPrint('[WS] Connecté → ${AppConstants.reverbHost}:${AppConstants.reverbPort}');
     } catch (e) {
       debugPrint('[WS] Init error: $e');
       rethrow;
@@ -83,20 +84,28 @@ class WebSocketService {
           try {
             final handler = events[event.eventName];
             if (handler != null) {
-              final data = event.data is String
-                  ? jsonDecode(event.data as String) as Map<String, dynamic>
-                  : event.data as Map<String, dynamic>;
+              Map<String, dynamic> data;
+              if (event.data is String) {
+                final decoded = jsonDecode(event.data as String);
+                data = decoded is Map<String, dynamic>
+                    ? decoded
+                    : <String, dynamic>{};
+              } else if (event.data is Map<String, dynamic>) {
+                data = event.data as Map<String, dynamic>;
+              } else {
+                data = <String, dynamic>{};
+              }
               handler(data);
             }
           } catch (e) {
-            debugPrint('[WS] Event parse error ($channelName): $e');
+            debugPrint('[WS] Event parse error ($channelName / ${event.eventName}): $e');
           }
         },
         onSubscriptionSucceeded: (ch, data) {
-          debugPrint('[WS] Abonné → $ch');
+          debugPrint('[WS] ✓ Abonné → $ch');
         },
         onSubscriptionError: (message, e) {
-          debugPrint('[WS] Erreur abonnement $channelName: $message');
+          debugPrint('[WS] ✗ Erreur abonnement $channelName: $message');
         },
       );
       _channels[channelName] = channel;

@@ -4,27 +4,55 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-// WebRTC uniquement sur les plateformes natives
 import 'package:flutter_webrtc/flutter_webrtc.dart'
     if (dart.library.html) '../../../../core/stubs/webrtc_stub.dart';
 
+import '../../../../core/api/api_client.dart';
 import '../../../../core/services/call_service.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/models/models.dart';
+import '../../../../shared/models/user_model.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
-// Provider de l'utilisateur courant (défini dans auth_provider.dart)
 import '../../../auth/data/auth_provider.dart';
 
+// ─── Provider historique appels ───────────────────────────────
+final callHistoryProvider =
+    FutureProvider.family<List<CallModel>, int>((ref, conversationId) async {
+  final response = await ApiClient().getCallHistory(conversationId);
+  final data = response.data;
+  List<dynamic> list;
+  if (data is Map && data.containsKey('data')) {
+    list = data['data'] as List<dynamic>;
+  } else if (data is List) {
+    list = data;
+  } else {
+    list = [];
+  }
+  return list
+      .map((e) => CallModel.fromJson(e as Map<String, dynamic>))
+      .toList();
+});
+
+// ─── Provider recherche utilisateurs ─────────────────────────
+final userSearchProvider =
+    FutureProvider.family<List<UserModel>, String>((ref, query) async {
+  if (query.length < 2) return [];
+  final response = await ApiClient().searchUsers(query);
+  final list = response.data as List<dynamic>? ?? [];
+  return list.map((e) => UserModel.fromJson(e as Map<String, dynamic>)).toList();
+});
+
+// ─── Page principale d'appel ──────────────────────────────────
 class CallPage extends ConsumerStatefulWidget {
   final CallModel call;
-
   const CallPage({super.key, required this.call});
 
   @override
   ConsumerState<CallPage> createState() => _CallPageState();
 }
 
-class _CallPageState extends ConsumerState<CallPage> {
+class _CallPageState extends ConsumerState<CallPage>
+    with SingleTickerProviderStateMixin {
   late CallModel _call;
   final CallService _callService = CallService();
 
@@ -32,11 +60,11 @@ class _CallPageState extends ConsumerState<CallPage> {
   bool _speakerOn = false;
   bool _cameraOff = false;
   bool _frontCamera = true;
+  bool _showParticipants = false;
 
   Duration _duration = Duration.zero;
   Timer? _timer;
 
-  // Renderers WebRTC – instanciés uniquement sur native
   RTCVideoRenderer? _localRenderer;
   RTCVideoRenderer? _remoteRenderer;
 
@@ -52,7 +80,6 @@ class _CallPageState extends ConsumerState<CallPage> {
     }
 
     _setupCallServiceCallbacks();
-
     if (_call.isActive) _startTimer();
   }
 
@@ -74,7 +101,6 @@ class _CallPageState extends ConsumerState<CallPage> {
       _callService.onLocalStream = (stream) {
         if (mounted) setState(() => _localRenderer!.srcObject = stream);
       };
-
       _callService.onRemoteStream = (stream) {
         if (mounted) setState(() => _remoteRenderer!.srcObject = stream);
       };
@@ -85,10 +111,7 @@ class _CallPageState extends ConsumerState<CallPage> {
       switch (status) {
         case 'active':
           setState(() {
-            _call = _call.copyWith(
-              status: 'active',
-              startedAt: DateTime.now(),
-            );
+            _call = _call.copyWith(status: 'active', startedAt: DateTime.now());
           });
           _startTimer();
           break;
@@ -110,20 +133,15 @@ class _CallPageState extends ConsumerState<CallPage> {
 
   // ── Actions ──────────────────────────────────────────────────
   Future<void> _answer() async {
-    final authState = ref.read(authProvider);
-    final currentUser = authState.user;
+    final currentUser = ref.read(authProvider).user;
     final success = await _callService.answerCall(
       _call.id,
       _call.conversationId,
       currentUser?.id ?? 0,
     );
-
     if (success && mounted) {
       setState(() {
-        _call = _call.copyWith(
-          status: 'active',
-          startedAt: DateTime.now(),
-        );
+        _call = _call.copyWith(status: 'active', startedAt: DateTime.now());
       });
       _startTimer();
     }
@@ -155,16 +173,36 @@ class _CallPageState extends ConsumerState<CallPage> {
     if (!kIsWeb) await _callService.switchCamera();
   }
 
-  // ── Helpers ──────────────────────────────────────────────────
+  // ── Ajouter un participant ────────────────────────────────────
+  void _showAddParticipant() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AddParticipantSheet(
+        conversationId: _call.conversationId,
+        callId: _call.id,
+      ),
+    );
+  }
+
+  // ── Historique appels ─────────────────────────────────────────
+  void _showCallHistory() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _CallHistorySheet(conversationId: _call.conversationId),
+    );
+  }
+
   String get _durationDisplay {
     final m = _duration.inMinutes;
     final s = _duration.inSeconds % 60;
     return '$m:${s.toString().padLeft(2, '0')}';
   }
 
-  int? get _currentUserId {
-    return ref.read(authProvider).user?.id;
-  }
+  int? get _currentUserId => ref.read(authProvider).user?.id;
 
   @override
   void dispose() {
@@ -189,7 +227,7 @@ class _CallPageState extends ConsumerState<CallPage> {
       backgroundColor: AppColors.primaryDark,
       body: Stack(
         children: [
-          // ── Fond vidéo distant ─────────────────────────────────
+          // Fond vidéo distant
           if (!kIsWeb && isVideo && _call.isActive && _remoteRenderer != null)
             Positioned.fill(
               child: RTCVideoView(
@@ -200,12 +238,8 @@ class _CallPageState extends ConsumerState<CallPage> {
           else
             _buildAudioBackground(),
 
-          // ── Vidéo locale (miniature) ──────────────────────────
-          if (!kIsWeb &&
-              isVideo &&
-              _call.isActive &&
-              !_cameraOff &&
-              _localRenderer != null)
+          // Vidéo locale (miniature)
+          if (!kIsWeb && isVideo && _call.isActive && !_cameraOff && _localRenderer != null)
             Positioned(
               top: isWide ? 80 : 60,
               right: 16,
@@ -221,7 +255,7 @@ class _CallPageState extends ConsumerState<CallPage> {
               ),
             ),
 
-          // ── Message Web (WebRTC non supporté dans le navigateur) ──
+          // Web: vidéo non supportée
           if (kIsWeb && isVideo)
             Positioned.fill(
               child: Container(
@@ -230,31 +264,56 @@ class _CallPageState extends ConsumerState<CallPage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.videocam_off_rounded,
-                          color: Colors.white54, size: 48),
+                      Icon(Icons.videocam_off_rounded, color: Colors.white54, size: 48),
                       SizedBox(height: 12),
-                      Text(
-                        'Vidéo non disponible sur navigateur',
-                        style: TextStyle(color: Colors.white54),
-                      ),
+                      Text('Vidéo non disponible sur navigateur',
+                          style: TextStyle(color: Colors.white54)),
                     ],
                   ),
                 ),
               ),
             ),
 
-          // ── Overlay principal ───────────────────────────────────
+          // Overlay principal
           SafeArea(
-            child: isWide
-                ? _buildWideLayout(isVideo)
-                : _buildNarrowLayout(isVideo),
+            child: Column(
+              children: [
+                // Barre supérieure avec bouton historique
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      // Bouton retour (uniquement si en cours)
+                      if (_call.isActive)
+                        IconButton(
+                          icon: const Icon(Icons.history_rounded, color: Colors.white60),
+                          tooltip: 'Historique',
+                          onPressed: _showCallHistory,
+                        ),
+                      const Spacer(),
+                      if (_call.isActive)
+                        IconButton(
+                          icon: const Icon(Icons.person_add_rounded, color: Colors.white60),
+                          tooltip: 'Ajouter participant',
+                          onPressed: _showAddParticipant,
+                        ),
+                    ],
+                  ),
+                ),
+
+                Expanded(
+                  child: isWide
+                      ? _buildWideLayout(isVideo)
+                      : _buildNarrowLayout(isVideo),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  // Layout large (web / tablette)
   Widget _buildWideLayout(bool isVideo) {
     return Row(
       children: [
@@ -262,9 +321,7 @@ class _CallPageState extends ConsumerState<CallPage> {
           flex: 3,
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _buildCallerInfo(),
-            ],
+            children: [_buildCallerInfo()],
           ),
         ),
         Expanded(
@@ -281,7 +338,6 @@ class _CallPageState extends ConsumerState<CallPage> {
     );
   }
 
-  // Layout étroit (mobile)
   Widget _buildNarrowLayout(bool isVideo) {
     return Column(
       children: [
@@ -294,7 +350,6 @@ class _CallPageState extends ConsumerState<CallPage> {
     );
   }
 
-  // ── Fond dégradé audio ────────────────────────────────────────
   Widget _buildAudioBackground() {
     return Container(
       decoration: const BoxDecoration(
@@ -307,84 +362,57 @@ class _CallPageState extends ConsumerState<CallPage> {
     );
   }
 
-  // ── Informations sur l'appelant ───────────────────────────────
   Widget _buildCallerInfo() {
     final statusText = _call.isPending
-        ? (_call.callerId == _currentUserId
-            ? 'Appel en cours...'
-            : 'Appel entrant...')
+        ? (_call.callerId == _currentUserId ? 'Appel en cours...' : 'Appel entrant...')
         : _call.isActive
             ? _durationDisplay
             : _call.status;
 
     return Column(
       children: [
-        // Avatar animé
         _AnimatedAvatar(
-          child: AvatarWidget(
-            name: _call.caller?.fullName ?? 'Appel',
-            size: 110,
-          ),
+          child: AvatarWidget(name: _call.caller?.fullName ?? 'Appel', size: 110),
         ),
         const SizedBox(height: 20),
         Text(
           _call.caller?.fullName ?? 'Appel entrant',
           style: const TextStyle(
-            color: Colors.white,
-            fontSize: 26,
-            fontWeight: FontWeight.w800,
-            fontFamily: 'Nunito',
-            letterSpacing: 0.3,
+            color: Colors.white, fontSize: 26, fontWeight: FontWeight.w800,
+            fontFamily: 'Nunito', letterSpacing: 0.3,
           ),
         ),
         const SizedBox(height: 4),
         if (_call.caller?.phoneNumber != null) ...[
           Text(
             _call.caller!.phoneNumber!,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.6),
-              fontSize: 14,
-              fontFamily: 'Nunito',
-            ),
+            style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 14, fontFamily: 'Nunito'),
           ),
           const SizedBox(height: 4),
         ],
         Text(
           statusText,
-          style: TextStyle(
-            color: Colors.white.withOpacity(0.75),
-            fontSize: 16,
-            fontFamily: 'Nunito',
-          ),
+          style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 16, fontFamily: 'Nunito'),
         ),
         const SizedBox(height: 10),
-        // Badge type d'appel
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
           decoration: BoxDecoration(
             color: Colors.white.withOpacity(0.12),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-                color: Colors.white.withOpacity(0.2), width: 1),
+            border: Border.all(color: Colors.white.withOpacity(0.2), width: 1),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                _call.isAudio
-                    ? Icons.call_rounded
-                    : Icons.videocam_rounded,
-                color: Colors.white,
-                size: 16,
+                _call.isAudio ? Icons.call_rounded : Icons.videocam_rounded,
+                color: Colors.white, size: 16,
               ),
               const SizedBox(width: 6),
               Text(
                 _call.isAudio ? 'Appel audio' : 'Appel vidéo',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontFamily: 'Nunito',
-                ),
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'Nunito'),
               ),
             ],
           ),
@@ -393,7 +421,6 @@ class _CallPageState extends ConsumerState<CallPage> {
     );
   }
 
-  // ── Contrôles d'appel ─────────────────────────────────────────
   Widget _buildControls(bool isVideo) {
     if (_call.isPending) {
       final isCaller = _call.callerId == _currentUserId;
@@ -419,9 +446,7 @@ class _CallPageState extends ConsumerState<CallPage> {
                 onTap: _reject,
               ),
               _buildRoundButton(
-                icon: _call.isVideo
-                    ? Icons.videocam_rounded
-                    : Icons.call_rounded,
+                icon: _call.isVideo ? Icons.videocam_rounded : Icons.call_rounded,
                 color: AppColors.success,
                 label: 'Répondre',
                 onTap: _answer,
@@ -447,18 +472,14 @@ class _CallPageState extends ConsumerState<CallPage> {
                 onTap: _toggleMute,
               ),
               _buildSmallButton(
-                icon: _speakerOn
-                    ? Icons.volume_up_rounded
-                    : Icons.volume_down_rounded,
+                icon: _speakerOn ? Icons.volume_up_rounded : Icons.volume_down_rounded,
                 label: 'Enceinte',
                 active: _speakerOn,
                 onTap: () => setState(() => _speakerOn = !_speakerOn),
               ),
               if (isVideo && !kIsWeb) ...[
                 _buildSmallButton(
-                  icon: _cameraOff
-                      ? Icons.videocam_off_rounded
-                      : Icons.videocam_rounded,
+                  icon: _cameraOff ? Icons.videocam_off_rounded : Icons.videocam_rounded,
                   label: 'Caméra',
                   active: _cameraOff,
                   onTap: _toggleCamera,
@@ -470,6 +491,12 @@ class _CallPageState extends ConsumerState<CallPage> {
                   onTap: _switchCamera,
                 ),
               ],
+              _buildSmallButton(
+                icon: Icons.person_add_rounded,
+                label: 'Ajouter',
+                active: false,
+                onTap: _showAddParticipant,
+              ),
             ],
           ),
           const SizedBox(height: 32),
@@ -498,30 +525,18 @@ class _CallPageState extends ConsumerState<CallPage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 72,
-            height: 72,
+            width: 72, height: 72,
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,
               boxShadow: [
-                BoxShadow(
-                  color: color.withOpacity(0.4),
-                  blurRadius: 16,
-                  offset: const Offset(0, 6),
-                ),
+                BoxShadow(color: color.withOpacity(0.4), blurRadius: 16, offset: const Offset(0, 6)),
               ],
             ),
             child: Icon(icon, color: Colors.white, size: 32),
           ),
           const SizedBox(height: 8),
-          Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 13,
-              fontFamily: 'Nunito',
-            ),
-          ),
+          Text(label, style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'Nunito')),
         ],
       ),
     );
@@ -540,32 +555,154 @@ class _CallPageState extends ConsumerState<CallPage> {
         children: [
           AnimatedContainer(
             duration: const Duration(milliseconds: 200),
-            width: 58,
-            height: 58,
+            width: 58, height: 58,
             decoration: BoxDecoration(
               color: active ? Colors.white : Colors.white.withOpacity(0.15),
               shape: BoxShape.circle,
               border: Border.all(
-                color: active
-                    ? Colors.white
-                    : Colors.white.withOpacity(0.25),
+                color: active ? Colors.white : Colors.white.withOpacity(0.25),
                 width: 1.5,
               ),
             ),
-            child: Icon(
-              icon,
-              color: active ? AppColors.primaryDark : Colors.white,
-              size: 24,
-            ),
+            child: Icon(icon,
+                color: active ? AppColors.primaryDark : Colors.white, size: 24),
           ),
           const SizedBox(height: 6),
-          Text(
-            label,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.75),
-              fontSize: 11,
-              fontFamily: 'Nunito',
+          Text(label,
+              style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 11, fontFamily: 'Nunito')),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Ajouter participant ──────────────────────────────────────
+class _AddParticipantSheet extends ConsumerStatefulWidget {
+  final int conversationId;
+  final int callId;
+  const _AddParticipantSheet({required this.conversationId, required this.callId});
+
+  @override
+  ConsumerState<_AddParticipantSheet> createState() => _AddParticipantSheetState();
+}
+
+class _AddParticipantSheetState extends ConsumerState<_AddParticipantSheet> {
+  final _searchCtrl = TextEditingController();
+  String _query = '';
+  bool _adding = false;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _addUser(UserModel user) async {
+    if (_adding) return;
+    setState(() => _adding = true);
+    try {
+      // Ajouter l'utilisateur à la conversation puis l'appel en cours
+      await ApiClient().addMember(0, user.id); // groupId=0 ignoré si direct
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${user.fullName} a été invité à rejoindre l\'appel',
+                style: const TextStyle(fontFamily: 'Nunito')),
+            backgroundColor: AppColors.primary,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _adding = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final searchAsync = _query.length >= 2
+        ? ref.watch(userSearchProvider(_query))
+        : const AsyncData(<UserModel>[]);
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 36, height: 4,
+            decoration: BoxDecoration(color: AppColors.grey200, borderRadius: BorderRadius.circular(2)),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Ajouter à l\'appel',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, fontFamily: 'Nunito')),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _searchCtrl,
+                  autofocus: true,
+                  onChanged: (v) => setState(() => _query = v),
+                  decoration: const InputDecoration(
+                    hintText: 'Rechercher par nom ou numéro...',
+                    prefixIcon: Icon(Icons.search, color: AppColors.grey400, size: 20),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 250,
+                  child: searchAsync.when(
+                    loading: () => const Center(child: CircularProgressIndicator(color: AppColors.primary)),
+                    error: (_, __) => const Center(child: Text('Erreur de recherche')),
+                    data: (users) {
+                      if (_query.length < 2) {
+                        return const Center(
+                          child: Text('Tapez au moins 2 caractères pour rechercher',
+                              style: TextStyle(color: AppColors.grey400, fontFamily: 'Nunito', fontSize: 13)),
+                        );
+                      }
+                      if (users.isEmpty) {
+                        return const Center(
+                          child: Text('Aucun utilisateur trouvé',
+                              style: TextStyle(color: AppColors.grey400, fontFamily: 'Nunito')),
+                        );
+                      }
+                      return ListView.builder(
+                        itemCount: users.length,
+                        itemBuilder: (_, i) {
+                          final user = users[i];
+                          return ListTile(
+                            leading: AvatarWidget(name: user.fullName, size: 38),
+                            title: Text(user.fullName,
+                                style: const TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600)),
+                            subtitle: Text(user.phoneNumber ?? user.email,
+                                style: const TextStyle(fontFamily: 'Nunito', fontSize: 12, color: AppColors.grey400)),
+                            trailing: _adding
+                                ? const SizedBox(width: 20, height: 20,
+                                    child: CircularProgressIndicator(strokeWidth: 2))
+                                : IconButton(
+                                    icon: const Icon(Icons.call_rounded, color: AppColors.primary),
+                                    onPressed: () => _addUser(user),
+                                  ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
+          ),
+          Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(context).padding.bottom + 8),
+            child: const SizedBox(),
           ),
         ],
       ),
@@ -573,7 +710,170 @@ class _CallPageState extends ConsumerState<CallPage> {
   }
 }
 
-// ── Avatar avec animation de pulsation ────────────────────────
+// ─── Historique des appels ────────────────────────────────────
+class _CallHistorySheet extends ConsumerWidget {
+  final int conversationId;
+  const _CallHistorySheet({required this.conversationId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final historyAsync = ref.watch(callHistoryProvider(conversationId));
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.65,
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 36, height: 4,
+            decoration: BoxDecoration(color: AppColors.grey200, borderRadius: BorderRadius.circular(2)),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Row(
+              children: [
+                const Text('Historique des appels',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, fontFamily: 'Nunito')),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded, color: AppColors.grey400),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: historyAsync.when(
+              loading: () => const Center(child: CircularProgressIndicator(color: AppColors.primary)),
+              error: (e, _) => const Center(child: Text('Impossible de charger l\'historique')),
+              data: (calls) {
+                if (calls.isEmpty) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text('Aucun appel dans l\'historique',
+                          style: TextStyle(color: AppColors.grey400, fontFamily: 'Nunito')),
+                    ),
+                  );
+                }
+                return ListView.separated(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: calls.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) => _CallHistoryTile(call: calls[i]),
+                );
+              },
+            ),
+          ),
+          SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
+        ],
+      ),
+    );
+  }
+}
+
+class _CallHistoryTile extends StatelessWidget {
+  final CallModel call;
+  const _CallHistoryTile({required this.call});
+
+  @override
+  Widget build(BuildContext context) {
+    final IconData statusIcon;
+    final Color statusColor;
+
+    switch (call.status) {
+      case 'active':
+      case 'ended':
+        statusIcon = call.isVideo ? Icons.videocam_rounded : Icons.call_rounded;
+        statusColor = AppColors.success;
+        break;
+      case 'rejected':
+        statusIcon = Icons.call_end_rounded;
+        statusColor = AppColors.error;
+        break;
+      case 'missed':
+        statusIcon = Icons.call_missed_rounded;
+        statusColor = AppColors.warning;
+        break;
+      default:
+        statusIcon = Icons.call_rounded;
+        statusColor = AppColors.grey400;
+    }
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(vertical: 6),
+      leading: Container(
+        width: 44, height: 44,
+        decoration: BoxDecoration(
+          color: statusColor.withOpacity(0.1),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(statusIcon, color: statusColor, size: 20),
+      ),
+      title: Text(
+        call.caller?.fullName ?? 'Inconnu',
+        style: const TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600, fontSize: 14),
+      ),
+      subtitle: Text(
+        '${call.isVideo ? 'Vidéo' : 'Audio'} · ${_statusLabel(call.status)}',
+        style: const TextStyle(fontFamily: 'Nunito', fontSize: 12, color: AppColors.grey400),
+      ),
+      trailing: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Text(
+            _formatDate(call.createdAt),
+            style: const TextStyle(fontFamily: 'Nunito', fontSize: 11, color: AppColors.grey400),
+          ),
+          if (call.duration != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              call.durationDisplay,
+              style: const TextStyle(fontFamily: 'Nunito', fontSize: 12, color: AppColors.grey600,
+                  fontWeight: FontWeight.w600),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _statusLabel(String status) {
+    switch (status) {
+      case 'ended': return 'Terminé';
+      case 'rejected': return 'Refusé';
+      case 'missed': return 'Manqué';
+      case 'active': return 'En cours';
+      case 'pending': return 'En attente';
+      default: return status;
+    }
+  }
+
+  String _formatDate(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inDays == 0) {
+      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    } else if (diff.inDays == 1) {
+      return 'Hier';
+    } else if (diff.inDays < 7) {
+      const days = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+      return days[dt.weekday - 1];
+    } else {
+      return '${dt.day}/${dt.month}/${dt.year}';
+    }
+  }
+}
+
+// ─── Avatar animé ─────────────────────────────────────────────
 class _AnimatedAvatar extends StatefulWidget {
   final Widget child;
   const _AnimatedAvatar({required this.child});
@@ -610,20 +910,12 @@ class _AnimatedAvatarState extends State<_AnimatedAvatar>
     return ScaleTransition(
       scale: _scale,
       child: Container(
-        width: 110,
-        height: 110,
+        width: 110, height: 110,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          border: Border.all(
-            color: Colors.white.withOpacity(0.35),
-            width: 3,
-          ),
+          border: Border.all(color: Colors.white.withOpacity(0.35), width: 3),
           boxShadow: [
-            BoxShadow(
-              color: Colors.white.withOpacity(0.1),
-              blurRadius: 20,
-              spreadRadius: 4,
-            ),
+            BoxShadow(color: Colors.white.withOpacity(0.1), blurRadius: 20, spreadRadius: 4),
           ],
         ),
         child: ClipOval(child: widget.child),

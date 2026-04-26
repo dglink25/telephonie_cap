@@ -1,4 +1,3 @@
-
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -36,8 +35,7 @@ class ApiClient {
           return handler.next(options);
         },
         onError: (DioException error, handler) {
-          debugPrint(
-              '[API] Error ${error.response?.statusCode}: ${error.message}');
+          debugPrint('[API] Error ${error.response?.statusCode}: ${error.message}');
           return handler.next(error);
         },
       ),
@@ -76,7 +74,6 @@ class ApiClient {
   // ─── Conversations ────────────────────────────────────────────
   Future<Response> getConversations() => _dio.get('/conversations');
 
-  /// FIX: Only accepts userId (int) — matches backend validation
   Future<Response> startDirectConversation(int userId) =>
       _dio.post('/conversations/direct', data: {'user_id': userId});
 
@@ -135,11 +132,7 @@ class ApiClient {
 
   Future<Response> getGroup(int id) => _dio.get('/groups/$id');
 
-  Future<Response> updateGroup(
-    int id, {
-    String? name,
-    String? description,
-  }) =>
+  Future<Response> updateGroup(int id, {String? name, String? description}) =>
       _dio.put('/groups/$id', data: {
         if (name != null) 'name': name,
         if (description != null) 'description': description,
@@ -158,12 +151,7 @@ class ApiClient {
 
   // ─── Appels ───────────────────────────────────────────────────
   Future<Response> initiateCall(int conversationId, String type) =>
-      _dio.post('/conversations/$conversationId/calls',
-          data: {'type': type});
-
-  Future<Response> initiateCallByPhone(String phoneNumber, String type) =>
-      _dio.post('/calls/direct',
-          data: {'phone_number': phoneNumber, 'type': type});
+      _dio.post('/conversations/$conversationId/calls', data: {'type': type});
 
   Future<Response> answerCall(int callId) =>
       _dio.post('/calls/$callId/answer');
@@ -202,8 +190,10 @@ class ApiClient {
       _dio.post('/fcm-token', data: {'fcm_token': token});
 
   // ─── Admin ────────────────────────────────────────────────────
-  Future<Response> adminGetUsers({String? status, String? search}) =>
+  /// FIX: Returns paginated response — handled in adminUsersProvider
+  Future<Response> adminGetUsers({String? status, String? search, int page = 1}) =>
       _dio.get('/admin/users', queryParameters: {
+        'page': page,
         if (status != null) 'status': status,
         if (search != null) 'search': search,
       });
