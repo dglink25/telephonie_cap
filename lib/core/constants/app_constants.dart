@@ -14,6 +14,8 @@ class AppConstants {
   // ─── Storage Keys ──────────────────────────────────────────
   static const String tokenKey = 'auth_token';
   static const String userKey = 'auth_user';
+  
+  //static const String userKey  = 'current_user';
 
   // ─── Pagination ────────────────────────────────────────────
   static const int messagesPerPage = 50;

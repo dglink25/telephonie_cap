@@ -1,121 +1,6 @@
-export 'user_model.dart';
+export 'user_model.dart' show UserModel;
 
 import 'user_model.dart';
-
-class MessageModel {
-  final int id;
-  final int conversationId;
-  final int senderId;
-  final UserModel? sender;
-  final String? body;
-  final String type; // text, image, file, audio, video
-  final String? mediaUrl;
-  final String? mediaName;
-  final int? mediaSize;
-  final DateTime createdAt;
-  final DateTime? deletedAt;
-
-  const MessageModel({
-    required this.id,
-    required this.conversationId,
-    required this.senderId,
-    this.sender,
-    this.body,
-    required this.type,
-    this.mediaUrl,
-    this.mediaName,
-    this.mediaSize,
-    required this.createdAt,
-    this.deletedAt,
-  });
-
-  factory MessageModel.fromJson(Map<String, dynamic> json) => MessageModel(
-        id: json['id'],
-        conversationId: json['conversation_id'],
-        senderId: json['sender_id'],
-        sender:
-            json['sender'] != null ? UserModel.fromJson(json['sender']) : null,
-        body: json['body'],
-        type: json['type'] ?? 'text',
-        mediaUrl: json['media_url'],
-        mediaName: json['media_name'],
-        mediaSize: json['media_size'],
-        createdAt: DateTime.parse(json['created_at']),
-        deletedAt: json['deleted_at'] != null
-            ? DateTime.tryParse(json['deleted_at'])
-            : null,
-      );
-
-  bool get isDeleted => deletedAt != null;
-  bool get hasMedia => mediaUrl != null;
-  bool get isText => type == 'text';
-  bool get isImage => type == 'image';
-  bool get isFile => type == 'file';
-  bool get isAudio => type == 'audio';
-  bool get isVideo => type == 'video';
-}
-class ConversationModel {
-  final int id;
-  final String type; // direct, group
-  final int? groupId;
-  final GroupModel? group;
-  final List<UserModel> participants;
-  final MessageModel? lastMessage;
-  final DateTime? lastMessageAt;
-  final DateTime? lastReadAt;
-
-  const ConversationModel({
-    required this.id,
-    required this.type,
-    this.groupId,
-    this.group,
-    required this.participants,
-    this.lastMessage,
-    this.lastMessageAt,
-    this.lastReadAt,
-  });
-
-  factory ConversationModel.fromJson(Map<String, dynamic> json) =>
-      ConversationModel(
-        id: json['id'],
-        type: json['type'] ?? 'direct',
-        groupId: json['group_id'],
-        group:
-            json['group'] != null ? GroupModel.fromJson(json['group']) : null,
-        participants: (json['participants'] as List? ?? [])
-            .map((p) => UserModel.fromJson(p))
-            .toList(),
-        lastMessage: json['last_message'] != null
-            ? MessageModel.fromJson(json['last_message'])
-            : null,
-        lastMessageAt: json['last_message_at'] != null
-            ? DateTime.tryParse(json['last_message_at'])
-            : null,
-        lastReadAt: json['pivot']?['last_read_at'] != null
-            ? DateTime.tryParse(json['pivot']['last_read_at'])
-            : null,
-      );
-
-  bool get isDirect => type == 'direct';
-  bool get isGroup => type == 'group';
-
-  bool get hasUnread {
-    if (lastMessage == null) return false;
-    if (lastReadAt == null) return true;
-    return lastMessage!.createdAt.isAfter(lastReadAt!);
-  }
-
-  String getDisplayName(int currentUserId) {
-    if (isGroup) return group?.name ?? 'Groupe';
-    final other =
-        participants.where((p) => p.id != currentUserId).firstOrNull;
-    return other?.fullName ?? 'Inconnu';
-  }
-
-  UserModel? getOtherParticipant(int currentUserId) {
-    return participants.where((p) => p.id != currentUserId).firstOrNull;
-  }
-}
 
 // ──────────────────────────────────────────────────────────────
 // Group
@@ -144,24 +29,192 @@ class GroupModel {
   });
 
   factory GroupModel.fromJson(Map<String, dynamic> json) => GroupModel(
-        id: json['id'],
-        name: json['name'] ?? '',
-        description: json['description'],
-        avatar: json['avatar'],
-        createdBy: json['created_by'],
+        id: json['id'] as int,
+        name: json['name'] as String? ?? '',
+        description: json['description'] as String?,
+        avatar: json['avatar'] as String?,
+        createdBy: json['created_by'] as int? ?? 0,
         creator: json['creator'] != null
-            ? UserModel.fromJson(json['creator'])
+            ? UserModel.fromJson(json['creator'] as Map<String, dynamic>)
             : null,
-        isDefault: json['is_default'] ?? false,
-        members: (json['members'] as List? ?? [])
-            .map((m) => UserModel.fromJson(m))
+        isDefault: json['is_default'] as bool? ?? false,
+        members: (json['members'] as List<dynamic>? ?? [])
+            .map((m) => UserModel.fromJson(m as Map<String, dynamic>))
             .toList(),
         conversation: json['conversation'] != null
-            ? ConversationModel.fromJson(json['conversation'])
+            ? ConversationModel.fromJson(
+                json['conversation'] as Map<String, dynamic>)
             : null,
       );
 
-  String get initials => name.isNotEmpty ? name[0].toUpperCase() : 'G';
+  String get initials {
+    final words = name.trim().split(' ');
+    if (words.isEmpty) return 'G';
+    if (words.length == 1) return words[0][0].toUpperCase();
+    return '${words[0][0]}${words[1][0]}'.toUpperCase();
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Message
+// ──────────────────────────────────────────────────────────────
+class MessageModel {
+  final int id;
+  final int conversationId;
+  final int senderId;
+  final UserModel? sender;
+  final String? body;
+  final String type; // text | image | file | audio | video
+  final String? mediaUrl;
+  final String? mediaName;
+  final int? mediaSize;
+  final DateTime? readAt;
+  final DateTime createdAt;
+  final DateTime? updatedAt;
+  final DateTime? deletedAt;
+
+  const MessageModel({
+    required this.id,
+    required this.conversationId,
+    required this.senderId,
+    this.sender,
+    this.body,
+    required this.type,
+    this.mediaUrl,
+    this.mediaName,
+    this.mediaSize,
+    this.readAt,
+    required this.createdAt,
+    this.updatedAt,
+    this.deletedAt,
+  });
+
+  factory MessageModel.fromJson(Map<String, dynamic> json) => MessageModel(
+        id: json['id'] as int,
+        conversationId: json['conversation_id'] as int,
+        senderId: json['sender_id'] as int,
+        sender: json['sender'] != null
+            ? UserModel.fromJson(json['sender'] as Map<String, dynamic>)
+            : null,
+        body: json['body'] as String?,
+        type: json['type'] as String? ?? 'text',
+        mediaUrl: json['media_url'] as String?,
+        mediaName: json['media_name'] as String?,
+        mediaSize: json['media_size'] as int?,
+        readAt: json['read_at'] != null
+            ? DateTime.tryParse(json['read_at'] as String)
+            : null,
+        createdAt: DateTime.parse(json['created_at'] as String),
+        updatedAt: json['updated_at'] != null
+            ? DateTime.tryParse(json['updated_at'] as String)
+            : null,
+        deletedAt: json['deleted_at'] != null
+            ? DateTime.tryParse(json['deleted_at'] as String)
+            : null,
+      );
+
+  bool get isText => type == 'text';
+  bool get isImage => type == 'image';
+  bool get isFile => type == 'file';
+  bool get isAudio => type == 'audio';
+  bool get isVideo => type == 'video';
+  bool get isDeleted => deletedAt != null;
+  bool get hasMedia => mediaUrl != null;
+  bool get isMedia => isImage || isFile || isAudio || isVideo;
+}
+
+// ──────────────────────────────────────────────────────────────
+// Conversation
+// ──────────────────────────────────────────────────────────────
+class ConversationModel {
+  final int id;
+  final String type; // direct | group
+  final int? groupId;
+  final GroupModel? group;
+  final List<UserModel> participants;
+  final MessageModel? lastMessage;
+  final DateTime? lastMessageAt;
+  final DateTime? lastReadAt;
+
+  const ConversationModel({
+    required this.id,
+    required this.type,
+    this.groupId,
+    this.group,
+    required this.participants,
+    this.lastMessage,
+    this.lastMessageAt,
+    this.lastReadAt,
+  });
+
+  factory ConversationModel.fromJson(Map<String, dynamic> json) =>
+      ConversationModel(
+        id: json['id'] as int,
+        type: json['type'] as String? ?? 'direct',
+        groupId: json['group_id'] as int?,
+        group: json['group'] != null
+            ? GroupModel.fromJson(json['group'] as Map<String, dynamic>)
+            : null,
+        participants: (json['participants'] as List<dynamic>? ?? [])
+            .map((p) => UserModel.fromJson(p as Map<String, dynamic>))
+            .toList(),
+        lastMessage: json['last_message'] != null
+            ? MessageModel.fromJson(
+                json['last_message'] as Map<String, dynamic>)
+            : null,
+        lastMessageAt: json['last_message_at'] != null
+            ? DateTime.tryParse(json['last_message_at'] as String)
+            : null,
+        lastReadAt: (() {
+          final pivot = json['pivot'] as Map<String, dynamic>?;
+          final raw = pivot?['last_read_at'] as String?;
+          return raw != null ? DateTime.tryParse(raw) : null;
+        })(),
+      );
+
+  bool get isDirect => type == 'direct';
+  bool get isGroup => type == 'group';
+
+  bool get hasUnread {
+    if (lastMessage == null) return false;
+    if (lastReadAt == null) return true;
+    return lastMessage!.createdAt.isAfter(lastReadAt!);
+  }
+
+  String getDisplayName(int currentUserId) {
+    if (isGroup) return group?.name ?? 'Groupe';
+    final other = getOtherParticipant(currentUserId);
+    return other?.fullName ?? 'Inconnu';
+  }
+
+  UserModel? getOtherParticipant(int currentUserId) {
+    try {
+      return participants.firstWhere((p) => p.id != currentUserId);
+    } catch (_) {
+      return participants.isNotEmpty ? participants.first : null;
+    }
+  }
+
+  ConversationModel copyWith({
+    int? id,
+    String? type,
+    int? groupId,
+    GroupModel? group,
+    List<UserModel>? participants,
+    MessageModel? lastMessage,
+    DateTime? lastMessageAt,
+    DateTime? lastReadAt,
+  }) =>
+      ConversationModel(
+        id: id ?? this.id,
+        type: type ?? this.type,
+        groupId: groupId ?? this.groupId,
+        group: group ?? this.group,
+        participants: participants ?? this.participants,
+        lastMessage: lastMessage ?? this.lastMessage,
+        lastMessageAt: lastMessageAt ?? this.lastMessageAt,
+        lastReadAt: lastReadAt ?? this.lastReadAt,
+      );
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -172,10 +225,11 @@ class CallModel {
   final int conversationId;
   final int callerId;
   final UserModel? caller;
-  final String type; // audio, video
-  final String status; // pending, active, ended, rejected
+  final String type;   // audio | video
+  final String status; // pending | active | ended | rejected | missed
   final DateTime? startedAt;
   final DateTime? endedAt;
+  final int? duration; // secondes
   final DateTime createdAt;
 
   const CallModel({
@@ -187,24 +241,27 @@ class CallModel {
     required this.status,
     this.startedAt,
     this.endedAt,
+    this.duration,
     required this.createdAt,
   });
 
   factory CallModel.fromJson(Map<String, dynamic> json) => CallModel(
-        id: json['id'],
-        conversationId: json['conversation_id'],
-        callerId: json['caller_id'],
-        caller:
-            json['caller'] != null ? UserModel.fromJson(json['caller']) : null,
-        type: json['type'] ?? 'audio',
-        status: json['status'] ?? 'pending',
+        id: json['id'] as int,
+        conversationId: json['conversation_id'] as int,
+        callerId: json['caller_id'] as int,
+        caller: json['caller'] != null
+            ? UserModel.fromJson(json['caller'] as Map<String, dynamic>)
+            : null,
+        type: json['type'] as String? ?? 'audio',
+        status: json['status'] as String? ?? 'pending',
         startedAt: json['started_at'] != null
-            ? DateTime.tryParse(json['started_at'])
+            ? DateTime.tryParse(json['started_at'] as String)
             : null,
         endedAt: json['ended_at'] != null
-            ? DateTime.tryParse(json['ended_at'])
+            ? DateTime.tryParse(json['ended_at'] as String)
             : null,
-        createdAt: DateTime.parse(json['created_at']),
+        duration: json['duration'] as int?,
+        createdAt: DateTime.parse(json['created_at'] as String),
       );
 
   bool get isPending => status == 'pending';
@@ -214,16 +271,36 @@ class CallModel {
   bool get isAudio => type == 'audio';
   bool get isVideo => type == 'video';
 
-  Duration? get duration {
-    if (startedAt == null || endedAt == null) return null;
-    return endedAt!.difference(startedAt!);
-  }
+  /// Copie immuable avec surcharge de champs.
+  CallModel copyWith({
+    int? id,
+    int? conversationId,
+    int? callerId,
+    UserModel? caller,
+    String? type,
+    String? status,
+    DateTime? startedAt,
+    DateTime? endedAt,
+    int? duration,
+    DateTime? createdAt,
+  }) =>
+      CallModel(
+        id: id ?? this.id,
+        conversationId: conversationId ?? this.conversationId,
+        callerId: callerId ?? this.callerId,
+        caller: caller ?? this.caller,
+        type: type ?? this.type,
+        status: status ?? this.status,
+        startedAt: startedAt ?? this.startedAt,
+        endedAt: endedAt ?? this.endedAt,
+        duration: duration ?? this.duration,
+        createdAt: createdAt ?? this.createdAt,
+      );
 
   String get durationDisplay {
-    final d = duration;
-    if (d == null) return '—';
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
+    if (duration == null) return '--';
+    final m = duration! ~/ 60;
+    final s = duration! % 60;
     return '$m:${s.toString().padLeft(2, '0')}';
   }
 }
@@ -248,22 +325,23 @@ class NotificationModel {
 
   factory NotificationModel.fromJson(Map<String, dynamic> json) =>
       NotificationModel(
-        id: json['id'],
-        type: json['type'] ?? '',
+        id: json['id'] as String,
+        type: json['type'] as String? ?? '',
         data: (json['data'] as Map<String, dynamic>?) ?? {},
-        readAt:
-            json['read_at'] != null ? DateTime.tryParse(json['read_at']) : null,
-        createdAt: DateTime.parse(json['created_at']),
+        readAt: json['read_at'] != null
+            ? DateTime.tryParse(json['read_at'] as String)
+            : null,
+        createdAt: DateTime.parse(json['created_at'] as String),
       );
 
   bool get isRead => readAt != null;
-  String get title => data['title'] ?? data['sender_name'] ?? 'Notification';
-  String get body => data['body'] ?? '';
+  String get title => data['title'] as String? ??
+      data['sender_name'] as String? ??
+      'Notification';
+  String get body => data['body'] as String? ?? '';
 }
 
-// ──────────────────────────────────────────────────────────────
-// Invitation
-// ──────────────────────────────────────────────────────────────
+
 class InvitationModel {
   final int id;
   final String email;
@@ -285,24 +363,22 @@ class InvitationModel {
 
   factory InvitationModel.fromJson(Map<String, dynamic> json) =>
       InvitationModel(
-        id: json['id'],
-        email: json['email'],
-        token: json['token'],
-        isUsed: json['is_used'] ?? false,
-        expiresAt: DateTime.parse(json['expires_at']),
+        id: json['id'] as int,
+        email: json['email'] as String,
+        token: json['token'] as String,
+        isUsed: json['is_used'] as bool? ?? false,
+        expiresAt: DateTime.parse(json['expires_at'] as String),
         invitedBy: json['invited_by'] != null
-            ? UserModel.fromJson(json['invited_by'])
+            ? UserModel.fromJson(json['invited_by'] as Map<String, dynamic>)
             : null,
-        createdAt: DateTime.parse(json['created_at']),
+        createdAt: DateTime.parse(json['created_at'] as String),
       );
 
   bool get isExpired => expiresAt.isBefore(DateTime.now());
   bool get isValid => !isUsed && !isExpired;
 }
 
-// ──────────────────────────────────────────────────────────────
-// Paginated Response
-// ──────────────────────────────────────────────────────────────
+
 class PaginatedResponse<T> {
   final List<T> data;
   final int currentPage;

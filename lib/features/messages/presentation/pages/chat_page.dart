@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import '../../../../core/api/api_client.dart';
+import '../../../../core/services/call_service.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/websocket/websocket_service.dart';
 import '../../../../shared/models/models.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
 import '../../../auth/data/auth_provider.dart';
@@ -19,43 +22,137 @@ class ChatPage extends ConsumerStatefulWidget {
 }
 
 class _ChatPageState extends ConsumerState<ChatPage> {
-  final _textController = TextEditingController();
+  final _textController  = TextEditingController();
   final _scrollController = ScrollController();
-  bool _isTyping = false;
-  bool _otherTyping = false;
+  final _ws = WebSocketService();
+  final _callService = CallService();
+
+  bool _isTyping      = false;
+  bool _otherTyping   = false;
   String? _otherTypingName;
   ConversationModel? _conversation;
+  Timer? _typingTimer;
 
   @override
   void initState() {
     super.initState();
     _loadConversation();
     _markRead();
+    _subscribeToWebSocket();
 
+    // Charger plus de messages au scroll vers le haut
     _scrollController.addListener(() {
-      if (_scrollController.position.pixels ==
-          _scrollController.position.maxScrollExtent) {
+      if (_scrollController.position.pixels <= 50) {
         ref
             .read(messagesProvider(widget.conversationId).notifier)
             .loadMore();
       }
     });
 
-    _textController.addListener(() {
-      final typing = _textController.text.isNotEmpty;
-      if (typing != _isTyping) {
-        _isTyping = typing;
-        ref
-            .read(messagesProvider(widget.conversationId).notifier)
-            .sendTyping(typing);
+    _textController.addListener(_onTextChanged);
+  }
+
+  void _onTextChanged() {
+    final typing = _textController.text.isNotEmpty;
+    if (typing != _isTyping) {
+      _isTyping = typing;
+      _typingTimer?.cancel();
+
+      ref
+          .read(messagesProvider(widget.conversationId).notifier)
+          .sendTyping(typing);
+
+      if (typing) {
+        // Auto-arrêt indicateur frappe après 3s d'inactivité
+        _typingTimer = Timer(const Duration(seconds: 3), () {
+          if (_isTyping) {
+            _isTyping = false;
+            ref
+                .read(messagesProvider(widget.conversationId).notifier)
+                .sendTyping(false);
+          }
+        });
       }
+    }
+  }
+
+  // ── WebSocket ──────────────────────────────────────────────────
+  void _subscribeToWebSocket() {
+    final currentUser = ref.read(currentUserProvider);
+
+    _ws.subscribeToConversation(widget.conversationId, events: {
+      // Nouveau message reçu
+      'message.sent': (data) {
+        if (!mounted) return;
+        final msg = MessageModel.fromJson(data);
+        // Ne pas ajouter si c'est notre propre message (déjà ajouté localement)
+        if (msg.senderId != currentUser?.id) {
+          ref
+              .read(messagesProvider(widget.conversationId).notifier)
+              .addMessage(msg);
+          _markRead();
+          _scrollToBottom();
+        }
+        // Mettre à jour la liste des conversations
+        ref.read(conversationsProvider.notifier).load();
+      },
+
+      // Indicateur de frappe
+      'user.typing': (data) {
+        if (!mounted) return;
+        final userId   = data['user_id'] as int?;
+        final isTyping = data['is_typing'] as bool? ?? false;
+        final name     = data['full_name'] as String? ?? '';
+
+        if (userId != currentUser?.id) {
+          setState(() {
+            _otherTyping     = isTyping;
+            _otherTypingName = name;
+          });
+
+          // Auto-reset après 4s (sécurité)
+          if (isTyping) {
+            Future.delayed(const Duration(seconds: 4), () {
+              if (mounted && _otherTyping) {
+                setState(() => _otherTyping = false);
+              }
+            });
+          }
+        }
+      },
+
+      // Appel initié dans cette conversation
+      'call.initiated': (data) {
+        if (!mounted) return;
+        final callerId = data['caller_id'] as int?;
+        if (callerId == currentUser?.id) return; // Ignoré si on est l'appelant
+
+        final call = CallModel.fromJson(data);
+        context.push('/calls/${call.id}', extra: call);
+      },
+
+      // Mise à jour statut appel
+      'call.status.updated': (data) {
+        _callService.onCallStatusChanged?.call(data['status'] as String);
+      },
+
+      // Signal WebRTC
+      'call.signal': (data) {
+        final senderId = data['sender_id'] as int?;
+        if (senderId != currentUser?.id) {
+          // Déléguer au CallService
+         // _callService.onCallSignalReceived(data);
+        }
+      },
     });
+
+    // Également écouter les appels entrants sur le canal utilisateur
+    _callService.listenToConversation(widget.conversationId);
   }
 
   Future<void> _loadConversation() async {
     try {
-      final response =
-          await ApiClient().getConversation(widget.conversationId);
+      final response = await ApiClient().getConversation(widget.conversationId);
       if (mounted) {
         setState(() {
           _conversation = ConversationModel.fromJson(response.data);
@@ -77,6 +174,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
     _textController.clear();
+    _isTyping = false;
+
     await ref
         .read(messagesProvider(widget.conversationId).notifier)
         .sendText(text);
@@ -95,22 +194,43 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     });
   }
 
+  // ── Appel ─────────────────────────────────────────────────────
+  Future<void> _initiateCall(String type) async {
+    final currentUser = ref.read(currentUserProvider);
+    if (currentUser == null) return;
+
+    final callData = await _callService.initiateCall(
+      widget.conversationId,
+      type,
+      currentUser.id,
+    );
+
+    if (callData != null && mounted) {
+      final call = CallModel.fromJson(callData);
+      context.push('/calls/${call.id}', extra: call);
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Impossible de démarrer l\'appel')),
+      );
+    }
+  }
+
   @override
   void dispose() {
+    _typingTimer?.cancel();
     _textController.dispose();
     _scrollController.dispose();
+    _ws.unsubscribeFromConversation(widget.conversationId);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final messagesAsync =
-        ref.watch(messagesProvider(widget.conversationId));
-    final currentUser = ref.watch(currentUserProvider);
-    final conv = _conversation;
-    final displayName =
-        conv?.getDisplayName(currentUser?.id ?? 0) ?? 'Conversation';
-    final other = conv?.getOtherParticipant(currentUser?.id ?? 0);
+    final messagesAsync = ref.watch(messagesProvider(widget.conversationId));
+    final currentUser   = ref.watch(currentUserProvider);
+    final conv          = _conversation;
+    final displayName   = conv?.getDisplayName(currentUser?.id ?? 0) ?? 'Conversation';
+    final other         = conv?.getOtherParticipant(currentUser?.id ?? 0);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -131,8 +251,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                     const SizedBox(height: 12),
                     TextButton(
                       onPressed: () => ref
-                          .read(messagesProvider(widget.conversationId)
-                              .notifier)
+                          .read(messagesProvider(widget.conversationId).notifier)
                           .load(refresh: true),
                       child: const Text('Réessayer'),
                     ),
@@ -143,29 +262,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   _buildMessageList(messages, currentUser?.id ?? 0),
             ),
           ),
-          if (_otherTyping)
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              alignment: Alignment.centerLeft,
-              child: Text(
-                '$_otherTypingName est en train d\'écrire...',
-                style: const TextStyle(
-                  color: AppColors.grey400,
-                  fontSize: 12,
-                  fontStyle: FontStyle.italic,
-                  fontFamily: 'Nunito',
-                ),
-              ),
-            ),
+          if (_otherTyping) _buildTypingIndicator(),
           _buildInputArea(),
         ],
       ),
     );
   }
 
-  AppBar _buildAppBar(
-      String name, UserModel? other, ConversationModel? conv) {
+  AppBar _buildAppBar(String name, UserModel? other, ConversationModel? conv) {
     return AppBar(
       backgroundColor: AppColors.white,
       titleSpacing: 0,
@@ -222,6 +326,15 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                       fontFamily: 'Nunito',
                     ),
                   )
+                else if (other?.phoneNumber != null)
+                  Text(
+                    other!.phoneNumber!,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.grey400,
+                      fontFamily: 'Nunito',
+                    ),
+                  )
                 else
                   const Text(
                     'En ligne',
@@ -242,72 +355,93 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           icon: const Icon(Icons.call_outlined),
           color: AppColors.grey700,
           onPressed: () => _initiateCall('audio'),
+          tooltip: 'Appel audio',
         ),
-        IconButton(
-          icon: const Icon(Icons.videocam_outlined),
-          color: AppColors.grey700,
-          onPressed: () => _initiateCall('video'),
-        ),
-        IconButton(
-          icon: const Icon(Icons.more_vert_rounded),
-          color: AppColors.grey700,
-          onPressed: () {},
-        ),
+        if (conv?.isGroup == false)
+          IconButton(
+            icon: const Icon(Icons.videocam_outlined),
+            color: AppColors.grey700,
+            onPressed: () => _initiateCall('video'),
+            tooltip: 'Appel vidéo',
+          ),
       ],
     );
   }
 
-  Future<void> _initiateCall(String type) async {
-    try {
-      final response =
-          await ApiClient().initiateCall(widget.conversationId, type);
-      final call = CallModel.fromJson(response.data);
-      if (mounted) context.push('/calls/${call.id}', extra: call);
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Impossible de démarrer l\'appel')),
-        );
-      }
-    }
-  }
-
-  Widget _buildMessageList(
-      List<MessageModel> messages, int currentUserId) {
+  Widget _buildMessageList(List<MessageModel> messages, int currentUserId) {
     if (messages.isEmpty) {
-      return const Center(
-        child: Text(
-          'Envoyez votre premier message !',
-          style: TextStyle(
-              color: AppColors.grey400, fontFamily: 'Nunito'),
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: const BoxDecoration(
+                color: AppColors.primarySurface,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.chat_bubble_outline_rounded,
+                  color: AppColors.primary, size: 28),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Commencez la conversation !',
+              style: TextStyle(
+                color: AppColors.grey400,
+                fontFamily: 'Nunito',
+              ),
+            ),
+          ],
         ),
       );
     }
 
     return ListView.builder(
       controller: _scrollController,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       itemCount: messages.length,
       itemBuilder: (context, index) {
-        final message = messages[index];
-        final isMine = message.senderId == currentUserId;
-        final prevMsg = index > 0 ? messages[index - 1] : null;
+        final msg     = messages[index];
+        final isMine  = msg.senderId == currentUserId;
         final showAvatar = !isMine &&
-            (prevMsg == null ||
-                prevMsg.senderId != message.senderId);
+            (index == 0 ||
+                messages[index - 1].senderId != msg.senderId);
 
         return _MessageBubble(
-          message: message,
-          isMine: isMine,
+          message:    msg,
+          isMine:     isMine,
           showAvatar: showAvatar,
-          onDelete: isMine
+          onDelete:   isMine
               ? () => ref
-                  .read(messagesProvider(widget.conversationId).notifier)
-                  .deleteMessage(message.id)
+                    .read(messagesProvider(widget.conversationId).notifier)
+                    .deleteMessage(msg.id)
               : null,
         );
       },
+    );
+  }
+
+  Widget _buildTypingIndicator() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      alignment: Alignment.centerLeft,
+      child: Row(
+        children: [
+          const SizedBox(width: 4),
+          Text(
+            '${_otherTypingName ?? ''} est en train d\'écrire',
+            style: const TextStyle(
+              color: AppColors.grey400,
+              fontSize: 12,
+              fontStyle: FontStyle.italic,
+              fontFamily: 'Nunito',
+            ),
+          ),
+          const SizedBox(width: 6),
+          _TypingDots(),
+        ],
+      ),
     );
   }
 
@@ -335,7 +469,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           IconButton(
             icon: const Icon(Icons.attach_file_rounded,
                 color: AppColors.grey400),
-            onPressed: () {},
+            onPressed: () {}, // TODO: file picker
           ),
           Expanded(
             child: Container(
@@ -377,9 +511,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   width: 44,
                   height: 44,
                   decoration: BoxDecoration(
-                    color: hasText
-                        ? AppColors.primary
-                        : AppColors.grey200,
+                    color: hasText ? AppColors.primary : AppColors.grey200,
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
@@ -397,7 +529,61 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 }
 
-// ─── Message Bubble ──────────────────────────────────────────
+// ── Indicateur points de frappe animés ─────────────────────────────
+class _TypingDots extends StatefulWidget {
+  @override
+  State<_TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<_TypingDots>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, __) {
+        return Row(
+          children: List.generate(3, (i) {
+            final opacity = (((_controller.value * 3) - i).clamp(0.0, 1.0));
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 1.5),
+              child: Opacity(
+                opacity: opacity,
+                child: Container(
+                  width: 5,
+                  height: 5,
+                  decoration: const BoxDecoration(
+                    color: AppColors.grey400,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+}
+
+// ── Message Bubble ───────────────────────────────────────────────
 class _MessageBubble extends StatelessWidget {
   final MessageModel message;
   final bool isMine;
@@ -433,8 +619,7 @@ class _MessageBubble extends StatelessWidget {
               constraints: BoxConstraints(
                 maxWidth: MediaQuery.of(context).size.width * 0.72,
               ),
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: isMine
                     ? AppColors.bubbleSent
@@ -482,7 +667,40 @@ class _MessageBubble extends StatelessWidget {
                       ),
                     )
                   else ...[
-                    if (message.body != null)
+                    if (message.isImage && message.mediaUrl != null)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.network(
+                          message.mediaUrl!,
+                          width: 220,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) =>
+                              const Icon(Icons.broken_image),
+                        ),
+                      ),
+                    if (message.isFile)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.attach_file_rounded,
+                              color: AppColors.primary, size: 18),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              message.mediaName ?? 'Fichier',
+                              style: TextStyle(
+                                color: isMine
+                                    ? Colors.white
+                                    : AppColors.grey800,
+                                fontFamily: 'Nunito',
+                                fontSize: 14,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    if (message.body != null && message.body!.isNotEmpty)
                       Text(
                         message.body!,
                         style: TextStyle(
@@ -543,9 +761,10 @@ class _MessageBubble extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded,
                   color: AppColors.error),
-              title: const Text('Supprimer le message',
-                  style: TextStyle(
-                      color: AppColors.error, fontFamily: 'Nunito')),
+              title: const Text(
+                'Supprimer le message',
+                style: TextStyle(color: AppColors.error, fontFamily: 'Nunito'),
+              ),
               onTap: () {
                 Navigator.pop(context);
                 onDelete?.call();

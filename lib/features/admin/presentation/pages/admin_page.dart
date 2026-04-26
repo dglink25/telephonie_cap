@@ -6,7 +6,6 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/models/models.dart';
 import '../../../../shared/models/user_model.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
-// Réutilise le parseur centralisé défini dans auth_provider.dart
 import '../../../auth/data/auth_provider.dart' show parseDioError;
 
 // ─── Providers ────────────────────────────────────────────────
@@ -146,8 +145,6 @@ class _UsersTab extends ConsumerWidget {
     }
   }
 
-  /// Affiche la boîte de confirmation puis effectue la suppression.
-  /// Le callback est async et géré ici — plus de VoidCallback non-awaitable.
   Future<void> _confirmDeleteUser(
     BuildContext context,
     WidgetRef ref,
@@ -259,7 +256,7 @@ class _UserCard extends StatelessWidget {
                   ],
                 ),
                 Text(
-                  user.phone_number ?? 'Pas de numéro',
+                  user.phoneNumber ?? 'Pas de numéro',
                   style: const TextStyle(
                     fontSize: 12,
                     color: AppColors.grey400,
@@ -267,6 +264,7 @@ class _UserCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
+                // ✅ CORRECTION : _StatusBadge accepte désormais String?
                 _StatusBadge(status: user.status),
               ],
             ),
@@ -330,14 +328,17 @@ class _UserCard extends StatelessWidget {
   }
 }
 
+// ─── _StatusBadge corrigé : accepte String? ───────────────────
 class _StatusBadge extends StatelessWidget {
-  final String status;
+  // ✅ String? au lieu de String — user.status est nullable
+  final String? status;
+
   const _StatusBadge({required this.status});
 
   @override
   Widget build(BuildContext context) {
-    Color color;
-    String label;
+    final Color color;
+    final String label;
 
     switch (status) {
       case 'active':
@@ -354,7 +355,7 @@ class _StatusBadge extends StatelessWidget {
         break;
       default:
         color = AppColors.grey400;
-        label = status;
+        label = status ?? 'Inconnu'; // gère le cas null
     }
 
     return Row(
@@ -469,8 +470,8 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
               separatorBuilder: (_, __) => const SizedBox(height: 10),
               itemBuilder: (context, index) => _InvitationCard(
                 invitation: invitations[index],
-                onDelete: () => _confirmDeleteInvitation(
-                    context, invitations[index]),
+                onDelete: () =>
+                    _confirmDeleteInvitation(context, invitations[index]),
               ),
             ),
           );
@@ -479,8 +480,6 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
     );
   }
 
-  /// Confirmation + suppression de l'invitation.
-  /// Async du début à la fin — pas de contexte perdu entre dialog et appel API.
   Future<void> _confirmDeleteInvitation(
     BuildContext context,
     InvitationModel invitation,
@@ -534,7 +533,6 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
 
     showDialog(
       context: context,
-      // barrierDismissible = false empêche de fermer accidentellement pendant l'envoi
       barrierDismissible: false,
       builder: (dialogCtx) => _InviteDialog(
         formKey: formKey,
@@ -545,8 +543,6 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
     );
   }
 
-  /// Envoi de l'invitation — le dialog reste ouvert pendant l'appel,
-  /// puis est fermé explicitement après succès ou erreur.
   Future<void> _sendInvitation(
     BuildContext pageContext,
     BuildContext dialogCtx,
@@ -556,15 +552,11 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
     try {
       await ApiClient().adminCreateInvitation(email);
       ref.invalidate(adminInvitationsProvider);
-
-      // Ferme le dialog seulement après succès
       if (dialogCtx.mounted) Navigator.pop(dialogCtx);
-
       if (pageContext.mounted) {
         _showSuccess(pageContext, 'Invitation envoyée à $email');
       }
     } on DioException catch (e) {
-      // L'erreur 422 "email déjà utilisé" doit s'afficher DANS le dialog
       final msg = parseDioError(e);
       if (dialogCtx.mounted) {
         _showErrorInDialog(dialogCtx, msg);
@@ -578,7 +570,6 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
     }
   }
 
-  /// Affiche un message d'erreur en snackbar DANS le dialog (overlay local).
   void _showErrorInDialog(BuildContext dialogCtx, String message) {
     ScaffoldMessenger.of(dialogCtx).showSnackBar(
       SnackBar(
@@ -601,7 +592,7 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
   }
 }
 
-// ─── Dialog d'invitation (widget séparé pour éviter setState sur dialog) ──
+// ─── Dialog d'invitation ──────────────────────────────────────
 class _InviteDialog extends StatefulWidget {
   final GlobalKey<FormState> formKey;
   final TextEditingController ctrl;
@@ -645,7 +636,6 @@ class _InviteDialogState extends State<_InviteDialog> {
         });
       }
     }
-    // Ne pas setState loading=false ici : si succès, le dialog est déjà fermé
   }
 
   @override
@@ -670,8 +660,6 @@ class _InviteDialogState extends State<_InviteDialog> {
                   fontFamily: 'Nunito'),
             ),
             const SizedBox(height: 16),
-
-            // Erreur inline sous le champ
             if (_inlineError != null) ...[
               Container(
                 padding:
@@ -701,7 +689,6 @@ class _InviteDialogState extends State<_InviteDialog> {
               ),
               const SizedBox(height: 12),
             ],
-
             TextFormField(
               controller: widget.ctrl,
               keyboardType: TextInputType.emailAddress,
@@ -862,7 +849,6 @@ class _InvitationCard extends StatelessWidget {
               ],
             ),
           ),
-          // Seules les invitations non utilisées peuvent être supprimées
           if (!invitation.isUsed)
             IconButton(
               icon: const Icon(Icons.delete_outline_rounded,
@@ -884,7 +870,6 @@ class _InvitationCard extends StatelessWidget {
 }
 
 // ─── Widgets utilitaires ──────────────────────────────────────
-
 class _ErrorView extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
