@@ -8,6 +8,7 @@ import 'package:app_links/app_links.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 import 'core/services/notification_service.dart';
+import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,7 +28,7 @@ void main() async {
   if (!kIsWeb) {
     try {
       await Firebase.initializeApp(
-        // options: DefaultFirebaseOptions.currentPlatform, // décommenter après flutterfire configure
+        options: DefaultFirebaseOptions.currentPlatform, // décommenter après flutterfire configure
       );
       await NotificationService().init();
     } catch (e) {

@@ -25,10 +25,10 @@ class WebSocketService {
         apiKey: AppConstants.reverbAppKey,
         cluster: 'mt1',
         // FIX: Utiliser wsHost et wsPort pour pointer vers Reverb local
-        //wsHost: AppConstants.reverbHost,
-        //wsPort: AppConstants.reverbPort,
-        //wssPort: AppConstants.reverbPort,
-        useTLS: AppConstants.reverbScheme == 'https',
+        wsHost: AppConstants.reverbHost,
+        wsPort: AppConstants.reverbPort,
+        wssPort: AppConstants.reverbPort,
+        useTLS: AppConstants.reverbScheme == 'http', // 'https' en production
         authEndpoint:
             '${AppConstants.baseUrl.replaceAll('/api', '')}/broadcasting/auth',
         onAuthorizer: (channelName, socketId, options) async {

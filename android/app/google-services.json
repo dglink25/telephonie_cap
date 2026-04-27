@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "618091922594",
+    "project_id": "cap-telephonie",
+    "storage_bucket": "cap-telephonie.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:618091922594:android:8ceaa8f2d93e259baa43fb",
+        "android_client_info": {
+          "package_name": "com.telephonie_cap.telephonie_cap"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBDCEU3L3hks-9BjAlZcUrzWTKHcurtNqk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
