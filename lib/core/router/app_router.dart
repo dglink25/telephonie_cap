@@ -27,21 +27,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final isInviteRoute = loc.startsWith('/invite/');
 
       if (isInviteRoute) return null;
-
       if (!isLoggedIn && !isLoginRoute) return '/login';
       if (isLoggedIn  &&  isLoginRoute) return '/home';
       return null;
     },
 
     routes: [
-      // ─── Auth ──────────────────────────────────────────────
       GoRoute(
         path: '/login',
         name: 'login',
         builder: (context, state) => const LoginPage(),
       ),
 
-      // ─── Invitation (deep link + web) ──────────────────────
       GoRoute(
         path: '/invite/:token',
         name: 'invite',
@@ -50,7 +47,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         ),
       ),
 
-      // ─── Shell principal (NavigationBar) ───────────────────
       ShellRoute(
         builder: (context, state, child) => HomePage(child: child),
         routes: [
@@ -77,7 +73,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         ],
       ),
 
-      // ─── Chat (hors shell) ─────────────────────────────────
       GoRoute(
         path: '/conversations/:id',
         name: 'chat',
@@ -86,13 +81,26 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         ),
       ),
 
-      // ─── Appel (hors shell) ────────────────────────────────
+      // FIX: CallPage avec gestion d'extra null (navigation depuis notification)
       GoRoute(
         path: '/calls/:id',
         name: 'call',
         builder: (context, state) {
-          final call = state.extra as CallModel;
-          return CallPage(call: call);
+          final extra = state.extra;
+          if (extra is CallModel) {
+            return CallPage(call: extra);
+          }
+
+          final callId = int.tryParse(state.pathParameters['id'] ?? '0') ?? 0;
+          final placeholderCall = CallModel(
+            id: callId,
+            conversationId: 0,
+            callerId: 0,
+            type: 'audio',
+            status: 'pending',
+            createdAt: DateTime.now(),
+          );
+          return CallPage(call: placeholderCall);
         },
       ),
     ],

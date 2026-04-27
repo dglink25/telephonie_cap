@@ -6,8 +6,25 @@ import '../api/api_client.dart';
 import '../websocket/websocket_service.dart';
 import 'ringtone_service.dart';
 
-/// État d'un appel WebRTC
+/// États d'un appel WebRTC
 enum CallState { idle, calling, ringing, active, ended }
+
+/// Données minimales d'un appel entrant
+class IncomingCallInfo {
+  final int callId;
+  final int conversationId;
+  final String callerName;
+  final String callType;
+  final Map<String, dynamic> raw;
+
+  const IncomingCallInfo({
+    required this.callId,
+    required this.conversationId,
+    required this.callerName,
+    required this.callType,
+    required this.raw,
+  });
+}
 
 class CallService extends ChangeNotifier {
   static final CallService _instance = CallService._internal();
@@ -23,7 +40,7 @@ class CallService extends ChangeNotifier {
   int? _currentCallId;
   int? _currentConversationId;
   String _callType = 'audio';
-  Map<String, dynamic>? _incomingCallData;
+  IncomingCallInfo? _incomingCallInfo;
 
   // ── WebRTC ───────────────────────────────────────────────────
   RTCPeerConnection? _peerConnection;
@@ -33,20 +50,21 @@ class CallService extends ChangeNotifier {
   // Callbacks UI
   Function(MediaStream)? onLocalStream;
   Function(MediaStream)? onRemoteStream;
-  Function(Map<String, dynamic>)? onIncomingCall;
+  Function(IncomingCallInfo)? onIncomingCall;
   Function(String status)? onCallStatusChanged;
 
-  // ICE candidate queue for race condition fix
+  // ICE candidate queue
   final List<RTCIceCandidate> _pendingCandidates = [];
   bool _remoteDescriptionSet = false;
 
   // ── Getters ──────────────────────────────────────────────────
   CallState get state => _state;
   int? get currentCallId => _currentCallId;
-  Map<String, dynamic>? get incomingCallData => _incomingCallData;
+  IncomingCallInfo? get incomingCallInfo => _incomingCallInfo;
   String get callType => _callType;
   MediaStream? get localStream => _localStream;
   MediaStream? get remoteStream => _remoteStream;
+  bool get hasActiveCall => _state != CallState.idle;
 
   static const Map<String, dynamic> _iceConfig = {
     'iceServers': [
@@ -56,7 +74,7 @@ class CallService extends ChangeNotifier {
     'sdpSemantics': 'unified-plan',
   };
 
-  // ── Écouter les événements WebSocket ─────────────────────────
+  // ── Écouter les événements WebSocket pour une conversation ────
   void listenToConversation(int conversationId) {
     _currentConversationId = conversationId;
     _ws.subscribeToConversation(conversationId, events: {
@@ -70,12 +88,24 @@ class CallService extends ChangeNotifier {
     _ws.unsubscribeFromConversation(conversationId);
   }
 
+  // ── FIX: Vérifier si l'utilisateur est déjà dans un appel ────
+  bool get isBusy => _state == CallState.calling ||
+      _state == CallState.active ||
+      _state == CallState.ringing;
+
   // ── Appel sortant ─────────────────────────────────────────────
+  /// Retourne null si déjà occupé, sinon les données de l'appel.
   Future<Map<String, dynamic>?> initiateCall(
     int conversationId,
     String type,
     int currentUserId,
   ) async {
+    // FIX: Ne pas initier si déjà en appel
+    if (isBusy) {
+      debugPrint('[Call] Already busy (state=$_state) — ignoring initiateCall');
+      return null;
+    }
+
     try {
       _callType = type;
       _currentConversationId = conversationId;
@@ -101,13 +131,19 @@ class CallService extends ChangeNotifier {
     } catch (e) {
       debugPrint('[Call] initiateCall error: $e');
       await _cleanup();
-      return null;
+      rethrow;
     }
   }
 
   // ── Répondre à un appel ──────────────────────────────────────
   Future<bool> answerCall(
       int callId, int conversationId, int currentUserId) async {
+    // FIX: Ne pas répondre si déjà en appel actif (autre appel)
+    if (_state == CallState.active || _state == CallState.calling) {
+      debugPrint('[Call] Already in active call — cannot answer');
+      return false;
+    }
+
     try {
       _currentCallId = callId;
       _currentConversationId = conversationId;
@@ -140,10 +176,11 @@ class CallService extends ChangeNotifier {
     try {
       if (!kIsWeb) await _ringtone.stopRinging();
       await _api.rejectCall(callId);
-      _incomingCallData = null;
-      _setState(CallState.idle);
     } catch (e) {
       debugPrint('[Call] rejectCall error: $e');
+    } finally {
+      _incomingCallInfo = null;
+      _setState(CallState.idle);
     }
   }
 
@@ -161,7 +198,7 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── BUG FIX: Public method for signal routing from chat_page ──
+  // ── FIX: Méthode publique pour router les signaux ─────────────
   void onCallSignalReceived(Map<String, dynamic> data) {
     _onCallSignal(data);
   }
@@ -231,12 +268,25 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── Gestionnaires d'événements WebSocket ─────────────────────
+  // ── Gestionnaires événements WebSocket ─────────────────────
   void _onCallInitiated(Map<String, dynamic> data) {
     _callType = data['type'] as String? ?? 'audio';
-    _incomingCallData = data;
+
+    // FIX: Extraire caller_id et vérifier même appareil géré côté UI
+    final callerId = data['caller_id'] as int?;
+    final info = IncomingCallInfo(
+      callId: data['call_id'] as int? ?? data['id'] as int? ?? 0,
+      conversationId: data['conversation_id'] as int? ?? 0,
+      callerName: (data['caller'] as Map<String, dynamic>?)?['full_name'] as String? ??
+          data['caller_name'] as String? ??
+          'Appel entrant',
+      callType: _callType,
+      raw: {...data, 'caller_id': callerId},
+    );
+
+    _incomingCallInfo = info;
     _setState(CallState.ringing);
-    onIncomingCall?.call(data);
+    onIncomingCall?.call(info);
     if (!kIsWeb) _ringtone.startRinging();
   }
 
@@ -357,7 +407,7 @@ class CallService extends ChangeNotifier {
     _pendingCandidates.clear();
     _remoteDescriptionSet = false;
     _currentCallId = null;
-    _incomingCallData = null;
+    _incomingCallInfo = null;
     _setState(CallState.idle);
   }
 

@@ -8,8 +8,7 @@ import '../../../../shared/models/user_model.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
 import '../../../auth/data/auth_provider.dart' show parseDioError;
 
-// ─── Providers ────────────────────────────────────────────────
-// FIX: Charge TOUTES les pages pour afficher tous les utilisateurs
+
 final adminUsersProvider = FutureProvider<List<UserModel>>((ref) async {
   final List<UserModel> allUsers = [];
   int page = 1;

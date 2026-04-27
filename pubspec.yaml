@@ -20,6 +20,7 @@ dependencies:
   dio: ^5.4.3
 
   # WebSocket (Pusher/Reverb)
+  # FIX: version ^2.1.0 supporte wsHost/wsPort nécessaires pour Reverb local
   pusher_channels_flutter: ^2.1.0
 
   # Secure storage
@@ -28,7 +29,7 @@ dependencies:
   # Time formatting
   timeago: ^3.6.1
 
-  # Image picker & file picker
+  # Image & file picker
   image_picker: ^1.1.2
   file_picker: ^8.0.3
 
@@ -43,23 +44,23 @@ dependencies:
   # URL launcher
   url_launcher: ^6.3.0
 
-  # Permission handler
+  # Permissions
   permission_handler: ^11.3.1
 
-  # Firebase Messaging (FCM)
+  # Firebase
   firebase_core: ^3.3.0
   firebase_messaging: ^15.1.0
 
   # Deep links
   app_links: ^6.0.0
 
-  # WebRTC — uniquement sur native, le web utilise le stub
+  # WebRTC — natif uniquement, le web utilise le stub
   flutter_webrtc: ^0.10.8
 
   # Notifications locales
   flutter_local_notifications: ^17.1.2
 
-  # Audio & vibration — uniquement sur native
+  # Audio & vibration — natif uniquement
   audioplayers: ^5.2.1
   vibration: ^2.0.0
 
@@ -80,6 +81,7 @@ flutter:
   assets:
     - assets/images/
     - assets/audio/
+    - assets/fonts/
 
   fonts:
     - family: Nunito

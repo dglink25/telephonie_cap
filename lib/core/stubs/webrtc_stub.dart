@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-// ── Renderer ──────────────────────────────────────────────────────
 class RTCVideoRenderer {
   dynamic srcObject;
 
@@ -8,8 +7,6 @@ class RTCVideoRenderer {
 
   void dispose() {}
 }
-
-// ── RTCVideoView : MUST be a Widget ───────────────────────────────
 class RTCVideoView extends StatelessWidget {
   final RTCVideoRenderer renderer;
   final int objectFit;
