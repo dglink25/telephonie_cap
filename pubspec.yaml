@@ -19,8 +19,7 @@ dependencies:
   # HTTP & API
   dio: ^5.4.3
 
-  # WebSocket (Pusher/Reverb)
-  # FIX: version ^2.1.0 supporte wsHost/wsPort nécessaires pour Reverb local
+  shared_preferences: ^2.2.0
   pusher_channels_flutter: ^2.1.0
 
   # Secure storage

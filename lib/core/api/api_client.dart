@@ -1,13 +1,10 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../constants/app_constants.dart';
+import 'auth_storage.dart'; // ← utilise le fallback web
 
 class ApiClient {
   late final Dio _dio;
-  final FlutterSecureStorage _storage = const FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
-  );
 
   static final ApiClient _instance = ApiClient._internal();
   factory ApiClient() => _instance;
@@ -25,7 +22,8 @@ class ApiClient {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
-          final token = await _storage.read(key: AppConstants.tokenKey);
+          // ✅ On passe par AuthStorage qui gère le fallback web/mobile
+          final token = await AuthStorage.getToken();
           if (token != null) {
             options.headers['Authorization'] = 'Bearer $token';
           }
@@ -190,7 +188,6 @@ class ApiClient {
       _dio.post('/fcm-token', data: {'fcm_token': token});
 
   // ─── Admin ────────────────────────────────────────────────────
-  /// FIX: Returns paginated response — handled in adminUsersProvider
   Future<Response> adminGetUsers({String? status, String? search, int page = 1}) =>
       _dio.get('/admin/users', queryParameters: {
         'page': page,
