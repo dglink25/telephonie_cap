@@ -27,7 +27,6 @@ String parseDioError(Object e) {
     final data = response.data;
     final status = response.statusCode ?? 0;
 
-    // ✅ 401 = identifiants incorrects (Laravel Sanctum renvoie 401)
     if (status == 401) return 'Identifiants incorrects. Vérifiez votre email et mot de passe.';
 
     if (status == 403) {
@@ -37,7 +36,7 @@ String parseDioError(Object e) {
       return 'Accès refusé. Contactez un administrateur.';
     }
 
-    // ✅ 422 = validation Laravel (email format, champ vide, etc.)
+
     if (status == 422) {
       if (data is Map) {
         final errors = data['errors'];

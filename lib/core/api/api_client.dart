@@ -1,7 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../constants/app_constants.dart';
-import 'auth_storage.dart'; // ← utilise le fallback web
+import 'auth_storage.dart'; 
 
 class ApiClient {
   late final Dio _dio;
@@ -22,7 +22,7 @@ class ApiClient {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
-          // ✅ On passe par AuthStorage qui gère le fallback web/mobile
+
           final token = await AuthStorage.getToken();
           if (token != null) {
             options.headers['Authorization'] = 'Bearer $token';
