@@ -15,6 +15,7 @@ class IncomingCallInfo {
   final int conversationId;
   final String callerName;
   final String callType;
+  final int callerId;
   final Map<String, dynamic> raw;
 
   const IncomingCallInfo({
@@ -22,6 +23,7 @@ class IncomingCallInfo {
     required this.conversationId,
     required this.callerName,
     required this.callType,
+    required this.callerId,
     required this.raw,
   });
 }
@@ -66,6 +68,11 @@ class CallService extends ChangeNotifier {
   MediaStream? get remoteStream => _remoteStream;
   bool get hasActiveCall => _state != CallState.idle;
 
+  bool get isBusy =>
+      _state == CallState.calling ||
+      _state == CallState.active ||
+      _state == CallState.ringing;
+
   static const Map<String, dynamic> _iceConfig = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
@@ -88,19 +95,12 @@ class CallService extends ChangeNotifier {
     _ws.unsubscribeFromConversation(conversationId);
   }
 
-  // ── FIX: Vérifier si l'utilisateur est déjà dans un appel ────
-  bool get isBusy => _state == CallState.calling ||
-      _state == CallState.active ||
-      _state == CallState.ringing;
-
   // ── Appel sortant ─────────────────────────────────────────────
-  /// Retourne null si déjà occupé, sinon les données de l'appel.
   Future<Map<String, dynamic>?> initiateCall(
     int conversationId,
     String type,
     int currentUserId,
   ) async {
-    // FIX: Ne pas initier si déjà en appel
     if (isBusy) {
       debugPrint('[Call] Already busy (state=$_state) — ignoring initiateCall');
       return null;
@@ -138,7 +138,6 @@ class CallService extends ChangeNotifier {
   // ── Répondre à un appel ──────────────────────────────────────
   Future<bool> answerCall(
       int callId, int conversationId, int currentUserId) async {
-    // FIX: Ne pas répondre si déjà en appel actif (autre appel)
     if (_state == CallState.active || _state == CallState.calling) {
       debugPrint('[Call] Already in active call — cannot answer');
       return false;
@@ -198,7 +197,7 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── FIX: Méthode publique pour router les signaux ─────────────
+  // ── Router les signaux WebRTC reçus via WebSocket ─────────────
   void onCallSignalReceived(Map<String, dynamic> data) {
     _onCallSignal(data);
   }
@@ -272,16 +271,22 @@ class CallService extends ChangeNotifier {
   void _onCallInitiated(Map<String, dynamic> data) {
     _callType = data['type'] as String? ?? 'audio';
 
-    // FIX: Extraire caller_id et vérifier même appareil géré côté UI
-    final callerId = data['caller_id'] as int?;
+    final callerId = data['caller_id'] as int?
+        ?? (data['caller'] as Map<String, dynamic>?)?['id'] as int?
+        ?? 0;
+
+    final callerName =
+        (data['caller'] as Map<String, dynamic>?)?['full_name'] as String?
+        ?? data['caller_name'] as String?
+        ?? 'Appel entrant';
+
     final info = IncomingCallInfo(
       callId: data['call_id'] as int? ?? data['id'] as int? ?? 0,
       conversationId: data['conversation_id'] as int? ?? 0,
-      callerName: (data['caller'] as Map<String, dynamic>?)?['full_name'] as String? ??
-          data['caller_name'] as String? ??
-          'Appel entrant',
+      callerName: callerName,
       callType: _callType,
-      raw: {...data, 'caller_id': callerId},
+      callerId: callerId,
+      raw: data,
     );
 
     _incomingCallInfo = info;

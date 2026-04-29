@@ -5,13 +5,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../api/api_client.dart';
 
-/// Top-level handler pour les messages FCM en arrière-plan (requis par Firebase)
+/// Top-level handler pour les messages FCM en arrière-plan
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   debugPrint('[FCM Background] ${message.messageId}');
 }
 
-/// Gère les notifications push FCM ET les notifications locales en temps réel.
 class NotificationService {
   static final NotificationService _instance =
       NotificationService._internal();
@@ -33,21 +32,26 @@ class NotificationService {
     if (_initialized) return;
     _initialized = true;
 
-    // Handler background FCM
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    FirebaseMessaging.onBackgroundMessage(
+        firebaseMessagingBackgroundHandler);
 
-    // Permissions iOS/Android 13+
+    // Permissions
     await _fcm.requestPermission(
       alert: true,
       badge: true,
       sound: true,
-      criticalAlert: false,
+      criticalAlert: true, // important pour sonneries d'appel
     );
 
-    // Canaux Android
+    // Désactiver le throttling FCM en premier plan
+    await _fcm.setForegroundNotificationPresentationOptions(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
     await _setupAndroidChannels();
 
-    // Initialiser flutter_local_notifications
     const androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosSettings = DarwinInitializationSettings(
@@ -70,16 +74,14 @@ class NotificationService {
     // Tap notification en arrière-plan
     FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
 
-    // Notification initiale (app ouverte via notification)
+    // Notification initiale
     final initialMessage = await _fcm.getInitialMessage();
     if (initialMessage != null) {
       _handleNotificationTap(initialMessage);
     }
 
-    // Envoyer token FCM au serveur
     await _registerFcmToken();
 
-    // Écouter changements de token
     _fcm.onTokenRefresh.listen((token) async {
       try {
         await ApiClient().updateFcmToken(token);
@@ -98,6 +100,7 @@ class NotificationService {
       playSound: true,
     );
 
+    // Canal appel avec importance MAX pour heads-up notification
     const callsChannel = AndroidNotificationChannel(
       'calls',
       'Appels entrants',
@@ -105,11 +108,11 @@ class NotificationService {
       importance: Importance.max,
       enableVibration: true,
       playSound: true,
+      showBadge: true,
     );
 
-    final plugin = _localNotifs
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>();
+    final plugin = _localNotifs.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
 
     await plugin?.createNotificationChannel(messagesChannel);
     await plugin?.createNotificationChannel(callsChannel);
@@ -122,17 +125,22 @@ class NotificationService {
       final token = await _fcm.getToken();
       if (token != null) {
         await ApiClient().updateFcmToken(token);
-        debugPrint('[FCM] Token enregistré');
+        debugPrint('[FCM] Token enregistré: ${token.substring(0, 20)}...');
       }
     } catch (e) {
       debugPrint('[FCM] Token registration error: $e');
     }
   }
 
+  // ── Méthode publique pour forcer le re-register (après login) ──
+  Future<void> refreshFcmToken() => _registerFcmToken();
+
   // ── Message en premier plan (FCM push) ─────────────────────────
   void _handleForegroundMessage(RemoteMessage message) {
     final data = message.data;
     final type = data['type'] as String?;
+
+    debugPrint('[FCM Foreground] type=$type data=$data');
 
     if (type == 'incoming_call') {
       _showCallNotification(
@@ -176,9 +184,7 @@ class NotificationService {
     debugPrint('[Notif] Background tap: ${response.payload}');
   }
 
-  // ── ✅ Notification locale message (depuis WebSocket temps réel) ──
-  /// Affiche une notification système quand un message arrive via WebSocket
-  /// pendant que l'utilisateur est dans une autre conversation ou en arrière-plan.
+  // ── Notification locale message ──────────────────────────────
   Future<void> showMessageNotificationInApp({
     required String senderName,
     required String body,
@@ -197,8 +203,7 @@ class NotificationService {
     );
   }
 
-  // ── ✅ Notification locale appel entrant (depuis WebSocket temps réel) ──
-  /// Affiche une notification système quand un appel arrive via WebSocket.
+  // ── Notification locale appel entrant ────────────────────────
   Future<void> showIncomingCallNotificationInApp({
     required String callerName,
     required String callType,
@@ -238,12 +243,10 @@ class NotificationService {
     );
 
     await _localNotifs.show(
-      // ID unique basé sur timestamp pour ne pas écraser les précédentes
       DateTime.now().millisecondsSinceEpoch ~/ 1000,
       title,
       body,
-      const NotificationDetails(
-          android: androidDetails, iOS: iosDetails),
+      const NotificationDetails(android: androidDetails, iOS: iosDetails),
       payload: jsonEncode(data),
     );
   }
@@ -265,10 +268,11 @@ class NotificationService {
       importance: Importance.max,
       priority: Priority.max,
       fullScreenIntent: true,
-      ongoing: true,
+      ongoing: false, // false pour permettre le swipe dismiss
       icon: '@mipmap/ic_launcher',
       playSound: true,
       enableVibration: true,
+      ticker: '$callerName appelle',
       actions: [
         const AndroidNotificationAction(
           'reject_call',
@@ -296,8 +300,7 @@ class NotificationService {
       int.tryParse(callId) ?? 0,
       callerName,
       '$callTypeLabel entrant...',
-      NotificationDetails(
-          android: androidDetails, iOS: iosDetails),
+      NotificationDetails(android: androidDetails, iOS: iosDetails),
       payload: jsonEncode({
         'type': 'incoming_call',
         'call_id': callId,

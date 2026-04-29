@@ -12,6 +12,7 @@ import '../../features/notifications/presentation/pages/notifications_page.dart'
 import '../../features/admin/presentation/pages/admin_page.dart';
 import '../../features/calls/presentation/pages/call_page.dart';
 import '../../shared/models/models.dart';
+import '../../shared/models/user_model.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authProvider);
@@ -21,14 +22,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     debugLogDiagnostics: false,
 
     redirect: (context, state) {
-      final isLoggedIn  = authState.isAuthenticated;
-      final loc         = state.matchedLocation;
-      final isLoginRoute  = loc == '/login';
+      final isLoggedIn = authState.isAuthenticated;
+      final loc = state.matchedLocation;
+      final isLoginRoute = loc == '/login';
       final isInviteRoute = loc.startsWith('/invite/');
 
       if (isInviteRoute) return null;
       if (!isLoggedIn && !isLoginRoute) return '/login';
-      if (isLoggedIn  &&  isLoginRoute) return '/home';
+      if (isLoggedIn && isLoginRoute) return '/home';
       return null;
     },
 
@@ -81,26 +82,32 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         ),
       ),
 
-      // FIX: CallPage avec gestion d'extra null (navigation depuis notification)
+      // CORRECTIF: extra est désormais un Map contenant 'call' et 'participants'
       GoRoute(
         path: '/calls/:id',
         name: 'call',
         builder: (context, state) {
+          final callId =
+              int.tryParse(state.pathParameters['id'] ?? '0') ?? 0;
           final extra = state.extra;
-          if (extra is CallModel) {
-            return CallPage(call: extra);
+
+          CallModel call;
+          List<UserModel> participants = [];
+
+          if (extra is Map) {
+            // Format depuis ChatPage: {'call': CallModel, 'participants': List<UserModel>}
+            call = extra['call'] as CallModel? ??
+                _placeholderCall(callId);
+            participants =
+                (extra['participants'] as List<UserModel>?) ?? [];
+          } else if (extra is CallModel) {
+            // Compatibilité ancien format
+            call = extra;
+          } else {
+            call = _placeholderCall(callId);
           }
 
-          final callId = int.tryParse(state.pathParameters['id'] ?? '0') ?? 0;
-          final placeholderCall = CallModel(
-            id: callId,
-            conversationId: 0,
-            callerId: 0,
-            type: 'audio',
-            status: 'pending',
-            createdAt: DateTime.now(),
-          );
-          return CallPage(call: placeholderCall);
+          return CallPage(call: call, participants: participants);
         },
       ),
     ],
@@ -112,3 +119,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     ),
   );
 });
+
+CallModel _placeholderCall(int callId) => CallModel(
+      id: callId,
+      conversationId: 0,
+      callerId: 0,
+      type: 'audio',
+      status: 'pending',
+      createdAt: DateTime.now(),
+    );

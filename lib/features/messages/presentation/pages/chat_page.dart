@@ -16,6 +16,7 @@ import '../../../../core/services/notification_service.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/websocket/websocket_service.dart';
 import '../../../../shared/models/models.dart';
+import '../../../../shared/models/user_model.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
 import '../../../auth/data/auth_provider.dart';
 import '../../../conversations/data/conversations_provider.dart';
@@ -44,7 +45,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Timer? _typingTimer;
   bool _isSendingFile = false;
 
-  // Appel entrant visible dans la page chat
+  /// Appel entrant visible dans la page chat
   IncomingCallInfo? _pendingIncomingCall;
 
   @override
@@ -93,7 +94,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final currentUser = ref.read(currentUserProvider);
 
     _ws.subscribeToConversation(widget.conversationId, events: {
-      // ✅ Nouveau message en temps réel
+      // Nouveau message
       'message.sent': (data) {
         if (!mounted) return;
         final msg = MessageModel.fromJson(data);
@@ -104,13 +105,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           _markRead();
           _scrollToBottom();
 
-          // ✅ Notification système si app en arrière-plan / focus ailleurs
           if (!kIsWeb) {
             NotificationService().showMessageNotificationInApp(
               senderName: msg.sender?.fullName ?? 'Message',
-              body: msg.type == 'text'
-                  ? (msg.body ?? '')
-                  : '📎 ${msg.type}',
+              body: msg.type == 'text' ? (msg.body ?? '') : '📎 ${msg.type}',
               conversationId: widget.conversationId,
               messageId: msg.id,
             );
@@ -119,7 +117,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ref.read(conversationsProvider.notifier).load();
       },
 
-      // ✅ Indicateur de frappe en temps réel
+      // Indicateur de frappe
       'user.typing': (data) {
         if (!mounted) return;
         final userId = data['user_id'] as int?;
@@ -141,13 +139,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         }
       },
 
-      // ✅ Appel entrant en temps réel
+      // Appel entrant — IMPORTANT: on filtre ici via callerId
       'call.initiated': (data) {
         if (!mounted) return;
         final callerId = data['caller_id'] as int?
             ?? (data['caller'] as Map<String, dynamic>?)?['id'] as int?;
 
-        // Ne pas afficher si on est l'appelant
+        // Ignorer si c'est MOI qui lance l'appel (broadcast.toOthers() devrait
+        // déjà le faire, mais on double-vérifie côté client)
         if (callerId == currentUser?.id) return;
 
         // Déjà en appel → rejeter automatiquement
@@ -166,12 +165,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               data['caller_name'] as String? ??
               'Appel entrant',
           callType: data['type'] as String? ?? 'audio',
+          callerId: callerId ?? 0,
           raw: data,
         );
 
         setState(() => _pendingIncomingCall = info);
 
-        // ✅ Notification système appel entrant
         if (!kIsWeb) {
           NotificationService().showIncomingCallNotificationInApp(
             callerName: info.callerName,
@@ -183,10 +182,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       },
 
       'call.status': (data) {
+        if (!mounted) return;
         final status = data['status'] as String? ?? '';
         _callService.onCallStatusChanged?.call(status);
         if (status == 'ended' || status == 'rejected') {
-          if (mounted) setState(() => _pendingIncomingCall = null);
+          setState(() => _pendingIncomingCall = null);
           if (!kIsWeb) {
             NotificationService()
                 .cancelCallNotification(data['call_id'] as int? ?? 0);
@@ -201,21 +201,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         }
       },
     });
-
-    _callService.listenToConversation(widget.conversationId);
   }
 
   void _setupCallServiceCallbacks() {
-    _callService.onIncomingCall = (info) {
+    // Ne pas re-enregistrer onIncomingCall ici car on gère déjà 'call.initiated'
+    // via WebSocket ci-dessus. Éviter la double bannière.
+    _callService.onCallStatusChanged = (status) {
       if (!mounted) return;
-      final currentUser = ref.read(currentUserProvider);
-      final callerId = info.raw['caller_id'] as int?;
-      if (callerId == currentUser?.id) return;
-      if (_callService.isBusy) {
-        _autoRejectBusy(info.callId);
-        return;
+      if (status == 'ended' || status == 'rejected') {
+        setState(() => _pendingIncomingCall = null);
       }
-      setState(() => _pendingIncomingCall = info);
     };
   }
 
@@ -248,16 +243,31 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     );
 
     if (success && mounted) {
-      final call = CallModel.fromJson({
-        ...info.raw,
-        'id': info.callId,
-        'conversation_id': info.conversationId,
-        'status': 'active',
-        'created_at': DateTime.now().toIso8601String(),
-        'caller_id': info.raw['caller_id'] ?? 0,
-        'type': info.callType,
-      });
-      context.push('/calls/${info.callId}', extra: call);
+      // Construire un CallModel avec le caller correct (celui qui a appelé)
+      final callerData = info.raw['caller'] as Map<String, dynamic>?;
+      UserModel? caller;
+      if (callerData != null) {
+        caller = UserModel.fromJson(callerData);
+      }
+
+      final call = CallModel(
+        id: info.callId,
+        conversationId: info.conversationId,
+        callerId: info.callerId,
+        caller: caller,
+        type: info.callType,
+        status: 'active',
+        startedAt: DateTime.now(),
+        createdAt: DateTime.now(),
+      );
+
+      context.push(
+        '/calls/${info.callId}',
+        extra: {
+          'call': call,
+          'participants': _conversation?.participants ?? [],
+        },
+      );
     }
   }
 
@@ -269,7 +279,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   Future<void> _loadConversation() async {
     try {
-      final response = await ApiClient().getConversation(widget.conversationId);
+      final response =
+          await ApiClient().getConversation(widget.conversationId);
       if (mounted) {
         setState(() {
           _conversation = ConversationModel.fromJson(
@@ -486,8 +497,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       );
 
       if (callData != null && mounted) {
+        // Construire le CallModel depuis la réponse API
         final call = CallModel.fromJson(callData);
-        context.push('/calls/${call.id}', extra: call);
+
+        // Naviguer vers CallPage en passant les participants pour
+        // que l'appelant voie le nom du destinataire
+        context.push(
+          '/calls/${call.id}',
+          extra: {
+            'call': call,
+            'participants': _conversation?.participants ?? <UserModel>[],
+          },
+        );
       } else if (mounted) {
         _showError("Impossible de démarrer l'appel.");
       }
@@ -501,27 +522,30 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
   }
 
-  // ✅ Confirmation avant appel vidéo
   Future<void> _initiateVideoCallWithConfirm() async {
     final conv = _conversation;
     final isGroup = conv?.isGroup ?? false;
 
     if (isGroup) {
-      _showError('Les appels vidéo ne sont disponibles qu\'en conversation directe.');
+      _showError(
+          'Les appels vidéo ne sont disponibles qu\'en conversation directe.');
       return;
     }
 
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Row(
           children: [
-            Icon(Icons.videocam_rounded, color: AppColors.primary, size: 22),
+            Icon(Icons.videocam_rounded,
+                color: AppColors.primary, size: 22),
             SizedBox(width: 10),
             Text('Appel vidéo',
                 style: TextStyle(
-                    fontFamily: 'Nunito', fontWeight: FontWeight.w800)),
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w800)),
           ],
         ),
         content: const Text(
@@ -555,7 +579,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         backgroundColor: AppColors.error,
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.all(16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
@@ -566,8 +591,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     _textController.dispose();
     _scrollController.dispose();
     _ws.unsubscribeFromConversation(widget.conversationId);
-    _callService.stopListening(widget.conversationId);
-    _callService.onIncomingCall = null;
+    _callService.onCallStatusChanged = null;
     super.dispose();
   }
 
@@ -602,7 +626,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                         const SizedBox(height: 12),
                         TextButton(
                           onPressed: () => ref
-                              .read(messagesProvider(widget.conversationId)
+                              .read(messagesProvider(
+                                      widget.conversationId)
                                   .notifier)
                               .load(refresh: true),
                           child: const Text('Réessayer'),
@@ -610,8 +635,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                       ],
                     ),
                   ),
-                  data: (messages) =>
-                      _buildMessageList(messages, currentUser?.id ?? 0),
+                  data: (messages) => _buildMessageList(
+                      messages, currentUser?.id ?? 0),
                 ),
               ),
 
@@ -626,8 +651,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                         width: 16,
                         height: 16,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: AppColors.primary)),
+                            strokeWidth: 2, color: AppColors.primary)),
                     const SizedBox(width: 10),
                     const Text('Envoi en cours...',
                         style: TextStyle(
@@ -642,7 +666,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             ],
           ),
 
-          // ✅ Bannière appel entrant par-dessus le chat
+          // Bannière appel entrant
           if (_pendingIncomingCall != null)
             _IncomingCallBanner(
               info: _pendingIncomingCall!,
@@ -654,7 +678,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     );
   }
 
-  // ✅ AppBar avec bouton appel audio ET vidéo bien visibles
   AppBar _buildAppBar(
       String name, UserModel? other, ConversationModel? conv) {
     final isGroup = conv?.isGroup ?? false;
@@ -721,7 +744,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ),
       ]),
       actions: [
-        // ✅ Bouton appel AUDIO — toujours visible
         Tooltip(
           message: 'Appel audio',
           child: IconButton(
@@ -731,8 +753,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             onPressed: () => _initiateCall('audio'),
           ),
         ),
-
-        // ✅ Bouton appel VIDÉO — visible uniquement en conversation directe
         if (!isGroup)
           Tooltip(
             message: 'Appel vidéo',
@@ -743,7 +763,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               onPressed: _initiateVideoCallWithConfirm,
             ),
           ),
-
         const SizedBox(width: 4),
       ],
     );
@@ -760,7 +779,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               width: 64,
               height: 64,
               decoration: const BoxDecoration(
-                  color: AppColors.primarySurface, shape: BoxShape.circle),
+                  color: AppColors.primarySurface,
+                  shape: BoxShape.circle),
               child: const Icon(Icons.chat_bubble_outline_rounded,
                   color: AppColors.primary, size: 28),
             ),
@@ -790,8 +810,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           showAvatar: showAvatar,
           onDelete: isMine
               ? () => ref
-                    .read(messagesProvider(widget.conversationId).notifier)
-                    .deleteMessage(msg.id)
+                  .read(messagesProvider(widget.conversationId)
+                      .notifier)
+                  .deleteMessage(msg.id)
               : null,
         );
       },
@@ -800,8 +821,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   Widget _buildTypingIndicator() {
     return Container(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       alignment: Alignment.centerLeft,
       child: Row(children: [
         const SizedBox(width: 4),
@@ -868,8 +888,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   hintText: 'Message...',
                   hintStyle: TextStyle(color: AppColors.grey400),
                   border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 10),
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 ),
               ),
             ),
@@ -892,9 +912,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                     shape: BoxShape.circle,
                   ),
                   child: Icon(Icons.send_rounded,
-                      color: hasText
-                          ? Colors.white
-                          : AppColors.grey400,
+                      color:
+                          hasText ? Colors.white : AppColors.grey400,
                       size: 20),
                 ),
               );
@@ -932,8 +951,9 @@ class _IncomingCallBannerState extends State<_IncomingCallBanner>
     super.initState();
     _ctrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 300));
-    _slide =
-        Tween<Offset>(begin: const Offset(0, -1), end: Offset.zero).animate(
+    _slide = Tween<Offset>(
+            begin: const Offset(0, -1), end: Offset.zero)
+        .animate(
       CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
     );
     _ctrl.forward();
@@ -1006,7 +1026,6 @@ class _IncomingCallBannerState extends State<_IncomingCallBanner>
                     ],
                   ),
                 ),
-                // Refuser
                 GestureDetector(
                   onTap: widget.onReject,
                   child: Container(
@@ -1021,7 +1040,6 @@ class _IncomingCallBannerState extends State<_IncomingCallBanner>
                         color: Colors.white, size: 20),
                   ),
                 ),
-                // Accepter
                 GestureDetector(
                   onTap: widget.onAccept,
                   child: Container(
@@ -1182,7 +1200,8 @@ class _TypingDotsState extends State<_TypingDots>
       animation: _controller,
       builder: (_, __) => Row(
         children: List.generate(3, (i) {
-          final opacity = ((_controller.value * 3) - i).clamp(0.0, 1.0);
+          final opacity =
+              ((_controller.value * 3) - i).clamp(0.0, 1.0);
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 1.5),
             child: Opacity(
@@ -1263,8 +1282,7 @@ class _MessageBubble extends StatelessWidget {
                   if (!isMine && showAvatar)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4),
-                      child: Text(
-                          message.sender?.fullName ?? '',
+                      child: Text(message.sender?.fullName ?? '',
                           style: const TextStyle(
                               color: AppColors.primary,
                               fontSize: 12,
@@ -1327,8 +1345,7 @@ class _MessageBubble extends StatelessWidget {
               color: AppColors.grey200,
               child: const Center(
                   child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: AppColors.primary)),
+                      strokeWidth: 2, color: AppColors.primary)),
             ),
             errorWidget: (_, __, ___) => Container(
               width: 220,
@@ -1344,9 +1361,7 @@ class _MessageBubble extends StatelessWidget {
 
     if (message.isAudio && mediaUrl != null) {
       return _AudioMessage(
-          url: mediaUrl,
-          isMine: isMine,
-          mediaName: message.mediaName);
+          url: mediaUrl, isMine: isMine, mediaName: message.mediaName);
     }
 
     if (message.isVideo && mediaUrl != null) {
@@ -1386,16 +1401,14 @@ class _MessageBubble extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.attach_file_rounded,
-                color:
-                    isMine ? Colors.white70 : AppColors.primary,
+                color: isMine ? Colors.white70 : AppColors.primary,
                 size: 18),
             const SizedBox(width: 6),
             Flexible(
               child: Text(message.mediaName ?? 'Fichier',
                   style: TextStyle(
-                      color: isMine
-                          ? Colors.white
-                          : AppColors.grey800,
+                      color:
+                          isMine ? Colors.white : AppColors.grey800,
                       fontFamily: 'Nunito',
                       fontSize: 14,
                       decoration: TextDecoration.underline),
@@ -1493,8 +1506,7 @@ class _AudioMessage extends StatelessWidget {
           Flexible(
             child: Text(mediaName ?? 'Message audio',
                 style: TextStyle(
-                    color:
-                        isMine ? Colors.white : AppColors.grey800,
+                    color: isMine ? Colors.white : AppColors.grey800,
                     fontFamily: 'Nunito',
                     fontSize: 13,
                     decoration: TextDecoration.underline)),
