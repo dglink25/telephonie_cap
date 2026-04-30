@@ -4,16 +4,17 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../api/api_client.dart';
+import 'dart:ui' show Color;
 
-/// Top-level handler pour les messages FCM en arrière-plan
+
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  debugPrint('[FCM Background] ${message.messageId}');
+
+  debugPrint('[FCM Background] type=${message.data['type']} id=${message.messageId}');
 }
 
 class NotificationService {
-  static final NotificationService _instance =
-      NotificationService._internal();
+  static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
   NotificationService._internal();
 
@@ -21,7 +22,6 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _localNotifs =
       FlutterLocalNotificationsPlugin();
 
-  // Callbacks navigation
   Function(Map<String, dynamic> data)? onMessageTap;
   Function(Map<String, dynamic> data)? onIncomingCallNotification;
 
@@ -32,28 +32,34 @@ class NotificationService {
     if (_initialized) return;
     _initialized = true;
 
-    FirebaseMessaging.onBackgroundMessage(
-        firebaseMessagingBackgroundHandler);
+    // Handler background AVANT tout
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
-    // Permissions
-    await _fcm.requestPermission(
+    // Permissions — demander TOUTES les permissions critiques
+    final settings = await _fcm.requestPermission(
       alert: true,
+      announcement: true,
       badge: true,
+      carPlay: false,
+      criticalAlert: true,
+      provisional: false,
       sound: true,
-      criticalAlert: true, // important pour sonneries d'appel
     );
 
-    // Désactiver le throttling FCM en premier plan
+    debugPrint('[FCM] Permission status: ${settings.authorizationStatus}');
+
+    // Présentation des notifications FCM en premier plan (iOS)
     await _fcm.setForegroundNotificationPresentationOptions(
       alert: true,
       badge: true,
       sound: true,
     );
 
+    // Créer les canaux Android AVANT d'initialiser le plugin
     await _setupAndroidChannels();
 
-    const androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+    // Init plugin local notifications
+    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
@@ -61,28 +67,29 @@ class NotificationService {
     );
 
     await _localNotifs.initialize(
-      const InitializationSettings(
-          android: androidSettings, iOS: iosSettings),
+      const InitializationSettings(android: androidSettings, iOS: iosSettings),
       onDidReceiveNotificationResponse: _onNotificationTap,
-      onDidReceiveBackgroundNotificationResponse:
-          _onBackgroundNotificationTap,
+      onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationTap,
     );
 
-    // Messages FCM en premier plan
+    // Écoute messages FCM en premier plan
     FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
 
-    // Tap notification en arrière-plan
+    // Tap sur notification quand app en arrière-plan (pas tuée)
     FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
 
-    // Notification initiale
+    // Notification initiale (app tuée, relancée depuis notif)
     final initialMessage = await _fcm.getInitialMessage();
     if (initialMessage != null) {
+      // Délai pour laisser l'app s'initialiser
+      await Future.delayed(const Duration(milliseconds: 500));
       _handleNotificationTap(initialMessage);
     }
 
     await _registerFcmToken();
 
     _fcm.onTokenRefresh.listen((token) async {
+      debugPrint('[FCM] Token refreshed');
       try {
         await ApiClient().updateFcmToken(token);
       } catch (_) {}
@@ -91,39 +98,47 @@ class NotificationService {
 
   // ── Canaux Android ─────────────────────────────────────────────
   Future<void> _setupAndroidChannels() async {
-    const messagesChannel = AndroidNotificationChannel(
-      'messages',
-      'Messages',
-      description: 'Notifications de nouveaux messages',
-      importance: Importance.high,
-      enableVibration: true,
-      playSound: true,
-    );
-
-    // Canal appel avec importance MAX pour heads-up notification
-    const callsChannel = AndroidNotificationChannel(
-      'calls',
-      'Appels entrants',
-      description: "Notifications d'appels entrants",
-      importance: Importance.max,
-      enableVibration: true,
-      playSound: true,
-      showBadge: true,
-    );
-
     final plugin = _localNotifs.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
 
-    await plugin?.createNotificationChannel(messagesChannel);
-    await plugin?.createNotificationChannel(callsChannel);
+    if (plugin == null) return;
+
+    // Canal messages
+    await plugin.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'messages',
+        'Messages',
+        description: 'Notifications de nouveaux messages',
+        importance: Importance.high,
+        enableVibration: true,
+        playSound: true,
+        showBadge: true,
+      ),
+    );
+
+    // Canal appels — importance MAX + fullScreenIntent pour sonner même en veille
+    await plugin.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'calls',
+        'Appels entrants',
+        description: "Notifications d'appels entrants",
+        importance: Importance.max,
+        enableVibration: true,
+        playSound: true,
+        showBadge: true,
+        // FIX: enableLights pour visibilité écran veille
+        enableLights: true,
+        ledColor: const Color(0xFF1B7F4A),
+      ),
+    );
   }
 
-  // ── Token FCM ──────────────────────────────────────────────────
+  // ── Enregistrement token FCM ───────────────────────────────────
   Future<void> _registerFcmToken() async {
     if (kIsWeb) return;
     try {
       final token = await _fcm.getToken();
-      if (token != null) {
+      if (token != null && token.isNotEmpty) {
         await ApiClient().updateFcmToken(token);
         debugPrint('[FCM] Token enregistré: ${token.substring(0, 20)}...');
       }
@@ -132,33 +147,32 @@ class NotificationService {
     }
   }
 
-  // ── Méthode publique pour forcer le re-register (après login) ──
   Future<void> refreshFcmToken() => _registerFcmToken();
 
-  // ── Message en premier plan (FCM push) ─────────────────────────
+  // ── Message FCM en premier plan ────────────────────────────────
   void _handleForegroundMessage(RemoteMessage message) {
     final data = message.data;
-    final type = data['type'] as String?;
+    final type = data['type'] as String? ?? '';
 
     debugPrint('[FCM Foreground] type=$type data=$data');
 
     if (type == 'incoming_call') {
+      // Déclencher la sonnerie + notification locale visuelle
       _showCallNotification(
-        callId: data['call_id'] ?? '',
+        callId: data['call_id'] ?? '0',
         callerName: data['caller_name'] ?? 'Appel entrant',
         callerPhone: data['caller_phone'] ?? '',
         callType: data['call_type'] ?? 'audio',
-        convId: data['conversation_id'] ?? '',
+        convId: data['conversation_id'] ?? '0',
       );
+      // Notifier le CallService pour déclencher la sonnerie inApp
       onIncomingCallNotification?.call(data);
     } else if (type == 'new_message') {
       _showMessageNotification(
         title: message.notification?.title ??
             data['sender_name'] as String? ??
-            'Message',
-        body: message.notification?.body ??
-            data['body'] as String? ??
-            '',
+            'Nouveau message',
+        body: message.notification?.body ?? data['body'] as String? ?? '',
         data: data,
       );
     }
@@ -169,18 +183,25 @@ class NotificationService {
   }
 
   void _onNotificationTap(NotificationResponse response) {
-    if (response.payload != null) {
-      try {
-        final data =
-            jsonDecode(response.payload!) as Map<String, dynamic>;
+    if (response.payload == null) return;
+    try {
+      final data = jsonDecode(response.payload!) as Map<String, dynamic>;
+
+      // FIX: gérer le tap "Répondre" vs tap normal
+      if (response.actionId == 'answer_call') {
+        onIncomingCallNotification?.call({...data, '_action': 'answer'});
+      } else if (response.actionId == 'reject_call') {
+        onIncomingCallNotification?.call({...data, '_action': 'reject'});
+      } else {
         onMessageTap?.call(data);
-      } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('[Notif] Tap parse error: $e');
     }
   }
 
   @pragma('vm:entry-point')
-  static void _onBackgroundNotificationTap(
-      NotificationResponse response) {
+  static void _onBackgroundNotificationTap(NotificationResponse response) {
     debugPrint('[Notif] Background tap: ${response.payload}');
   }
 
@@ -251,7 +272,6 @@ class NotificationService {
     );
   }
 
-  // ── Afficher notification appel entrant ───────────────────────
   Future<void> _showCallNotification({
     required String callId,
     required String callerName,
@@ -262,29 +282,51 @@ class NotificationService {
     final callTypeLabel =
         callType == 'video' ? '📹 Appel vidéo' : '📞 Appel audio';
 
+    final payload = jsonEncode({
+      'type': 'incoming_call',
+      'call_id': callId,
+      'conversation_id': convId,
+      'caller_name': callerName,
+      'caller_phone': callerPhone,
+      'call_type': callType,
+    });
+
     final androidDetails = AndroidNotificationDetails(
       'calls',
       'Appels entrants',
+      channelDescription: "Notifications d'appels entrants",
       importance: Importance.max,
       priority: Priority.max,
+      // FIX CRITIQUE: fullScreenIntent pour réveiller l'écran
       fullScreenIntent: true,
-      ongoing: false, // false pour permettre le swipe dismiss
+      // FIX: ongoing=true pour ne pas être balayé accidentellement
+      ongoing: true,
+      autoCancel: false,
       icon: '@mipmap/ic_launcher',
       playSound: true,
       enableVibration: true,
+      enableLights: true,
+      ledColor: const Color(0xFF1B7F4A),
+      ledOnMs: 500,
+      ledOffMs: 500,
       ticker: '$callerName appelle',
+      // FIX: category CALL pour Android 13+
+      category: AndroidNotificationCategory.call,
+      visibility: NotificationVisibility.public,
       actions: [
         const AndroidNotificationAction(
           'reject_call',
-          'Refuser',
+          '❌ Refuser',
           cancelNotification: true,
           showsUserInterface: false,
+          inputs: [],
         ),
         const AndroidNotificationAction(
           'answer_call',
-          'Répondre',
+          '✅ Répondre',
           cancelNotification: true,
           showsUserInterface: true,
+          inputs: [],
         ),
       ],
     );
@@ -297,18 +339,11 @@ class NotificationService {
     );
 
     await _localNotifs.show(
-      int.tryParse(callId) ?? 0,
+      int.tryParse(callId) ?? DateTime.now().millisecondsSinceEpoch ~/ 1000,
       callerName,
       '$callTypeLabel entrant...',
       NotificationDetails(android: androidDetails, iOS: iosDetails),
-      payload: jsonEncode({
-        'type': 'incoming_call',
-        'call_id': callId,
-        'conversation_id': convId,
-        'caller_name': callerName,
-        'caller_phone': callerPhone,
-        'call_type': callType,
-      }),
+      payload: payload,
     );
   }
 
@@ -319,4 +354,9 @@ class NotificationService {
   Future<void> cancelAll() async {
     await _localNotifs.cancelAll();
   }
+}
+
+
+class _Color {
+  const _Color(int value);
 }

@@ -12,15 +12,15 @@
   <link rel="icon" type="image/png" href="favicon.png"/>
   <title>Téléphonie CAP</title>
   <link rel="manifest" href="manifest.json">
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
 
   <script charset="utf-8" src="https://js.pusher.com/8.3.0/pusher.min.js"></script>
   <script>
-
-    window.REVERB_HOST    = '192.168.100.201';
+    window.REVERB_HOST    = '192.168.10.126';
     window.REVERB_PORT    = 8080;
     window.REVERB_APP_KEY = 'xtsedffitwzc6vpwl7tz';
     window.REVERB_SCHEME  = 'http';
-
 
     const _OriginalPusher = window.Pusher;
     window.Pusher = function(apiKey, options) {

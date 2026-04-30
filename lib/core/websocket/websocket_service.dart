@@ -16,16 +16,25 @@ class WebSocketService {
   bool _connecting = false;
   String? _authToken;
 
-  // Stocker les subscriptions pour re-abonnement après reconnexion
   final Map<String, PusherChannel> _channels = {};
+  // Pendantes = toutes les subscriptions demandées, pour re-abonnement auto
   final Map<String, Map<String, EventCallback>> _pendingSubscriptions = {};
+
+  // ─────────────────────────────────────────────────────────────
+  // INIT / CONNEXION
+  // ─────────────────────────────────────────────────────────────
 
   Future<void> init(String authToken) async {
     _authToken = authToken;
 
-    // CORRECTION: Eviter double init simultané
-    if (_connecting) return;
-    if (_initialized) return;
+    if (_connecting) {
+      debugPrint('[WS] Init déjà en cours — attente');
+      return;
+    }
+    if (_initialized) {
+      debugPrint('[WS] Déjà connecté');
+      return;
+    }
 
     _connecting = true;
 
@@ -54,11 +63,10 @@ class WebSocketService {
           if (currentState == 'CONNECTED') {
             _initialized = true;
             _connecting = false;
-            // CORRECTION: Re-abonner aux channels après reconnexion
+            // Re-abonner tous les channels après reconnexion
             _resubscribeAll();
-          }
-
-          if (currentState == 'DISCONNECTED' || currentState == 'FAILED') {
+          } else if (currentState == 'DISCONNECTED' ||
+              currentState == 'FAILED') {
             _initialized = false;
             _connecting = false;
             _channels.clear();
@@ -72,7 +80,6 @@ class WebSocketService {
       );
 
       await _pusher.connect();
-      // Ne pas mettre _initialized = true ici, attendre onConnectionStateChange CONNECTED
     } catch (e) {
       _initialized = false;
       _connecting = false;
@@ -81,15 +88,24 @@ class WebSocketService {
     }
   }
 
-  // CORRECTION: Re-abonnement automatique après reconnexion
+  // ─────────────────────────────────────────────────────────────
+  // RE-ABONNEMENT AUTOMATIQUE après reconnexion
+  // ─────────────────────────────────────────────────────────────
+
   Future<void> _resubscribeAll() async {
-    final pending = Map<String, Map<String, EventCallback>>.from(
+    final toResubscribe = Map<String, Map<String, EventCallback>>.from(
         _pendingSubscriptions);
-    for (final entry in pending.entries) {
-      await _subscribePresence(entry.key.replaceFirst('presence-', ''),
-          events: entry.value);
+    debugPrint('[WS] Re-abonnement de ${toResubscribe.length} channels');
+
+    for (final entry in toResubscribe.entries) {
+      final channelName = entry.key;
+      final rawName = channelName.replaceFirst('presence-', '');
+      if (!_channels.containsKey(channelName)) {
+        await _subscribePresence(rawName, events: entry.value);
+      }
     }
   }
+
 
   Future<void> subscribeToConversation(
     int conversationId, {
@@ -111,16 +127,29 @@ class WebSocketService {
   }) async {
     final channelName = 'presence-$name';
 
-    // Stocker pour re-abonnement
-    _pendingSubscriptions[channelName] = events;
 
-    if (_channels.containsKey(channelName)) return;
+    if (_pendingSubscriptions.containsKey(channelName)) {
+      _pendingSubscriptions[channelName]!.addAll(events);
+    } else {
+      _pendingSubscriptions[channelName] = Map.from(events);
+    }
 
-    if (!_initialized) {
-      debugPrint("[WS] Non connecté — subscription en attente: $channelName");
+    // Si déjà abonné, mettre à jour les events en réabonnant
+    if (_channels.containsKey(channelName)) {
+      debugPrint('[WS] Channel $channelName déjà abonné');
       return;
     }
 
+    if (!_initialized) {
+      debugPrint('[WS] Non connecté — subscription en attente: $channelName');
+      return;
+    }
+
+    await _doSubscribe(channelName, events);
+  }
+
+  Future<void> _doSubscribe(
+      String channelName, Map<String, EventCallback> events) async {
     try {
       final channel = await _pusher.subscribe(
         channelName: channelName,
@@ -146,17 +175,16 @@ class WebSocketService {
             debugPrint('[WS] 👤 Parti $ch: ${member.userId}'),
       );
       _channels[channelName] = channel;
+      debugPrint('[WS] Subscribe lancé → $channelName');
     } catch (e) {
       debugPrint('[WS] Subscribe error ($channelName): $e');
     }
   }
 
-  // CORRECTION: Parse robuste des données d'événement
   Map<String, dynamic> _parseEventData(dynamic rawData) {
     if (rawData is Map<String, dynamic>) return rawData;
     if (rawData is Map) return Map<String, dynamic>.from(rawData);
-    if (rawData is String) {
-      if (rawData.isEmpty) return {};
+    if (rawData is String && rawData.isNotEmpty) {
       try {
         final decoded = jsonDecode(rawData);
         if (decoded is Map<String, dynamic>) return decoded;
@@ -168,7 +196,6 @@ class WebSocketService {
 
   Future<void> unsubscribeFromConversation(int conversationId) async {
     final channelName = 'presence-conversation.$conversationId';
-    _pendingSubscriptions.remove(channelName);
     await _unsubscribe(channelName);
   }
 
@@ -189,6 +216,10 @@ class WebSocketService {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // DÉCONNEXION
+  // ─────────────────────────────────────────────────────────────
+
   Future<void> disconnect() async {
     _pendingSubscriptions.clear();
     try {
@@ -204,7 +235,7 @@ class WebSocketService {
     } finally {
       _initialized = false;
       _connecting = false;
-      debugPrint('[WS] Déconnecté');
+      debugPrint('[WS] Déconnecté proprement');
     }
   }
 

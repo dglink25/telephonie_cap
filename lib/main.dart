@@ -25,14 +25,21 @@ void main() async {
     statusBarIconBrightness: Brightness.dark,
   ));
 
+  // CORRECTION: Initialiser Firebase sur TOUTES les plateformes (web inclus)
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    debugPrint('[Firebase] Init error (ignored): $e');
+  }
+
+  // Notifications locales uniquement sur mobile (pas web)
   if (!kIsWeb) {
     try {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform, // décommenter après flutterfire configure
-      );
       await NotificationService().init();
     } catch (e) {
-      debugPrint('[Firebase] Init error (ignored in dev): $e');
+      debugPrint('[Notifications] Init error (ignored): $e');
     }
   }
 
@@ -58,7 +65,6 @@ class _TelephonieCAPAppState extends ConsumerState<TelephonieCAPApp> {
   @override
   void initState() {
     super.initState();
-    // BUG FIX: app_links ne fonctionne pas sur le web, on skip
     if (!kIsWeb) {
       _initDeepLinks();
     }
@@ -66,7 +72,6 @@ class _TelephonieCAPAppState extends ConsumerState<TelephonieCAPApp> {
   }
 
   void _setupNotificationCallbacks() {
-    // Les notifications ne fonctionnent pas sur le web
     if (kIsWeb) return;
     NotificationService().onMessageTap = (data) {
       final convId = data['conversation_id'];
@@ -87,7 +92,8 @@ class _TelephonieCAPAppState extends ConsumerState<TelephonieCAPApp> {
 
   void _handleDeepLink(Uri uri) {
     if (uri.scheme == 'telephoniecap' && uri.host == 'invite') {
-      final token = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
+      final token =
+          uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
       if (token != null && token.isNotEmpty) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           ref.read(appRouterProvider).go('/invite/$token');
@@ -106,7 +112,8 @@ class _TelephonieCAPAppState extends ConsumerState<TelephonieCAPApp> {
       routerConfig: router,
       builder: (context, child) {
         return MediaQuery(
-          data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: TextScaler.noScaling),
           child: child!,
         );
       },

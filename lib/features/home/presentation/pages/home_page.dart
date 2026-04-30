@@ -27,15 +27,15 @@ class _HomePageState extends ConsumerState<HomePage> {
   void initState() {
     super.initState();
     _setupGlobalCallListener();
+    _setupNotificationCallbacks();
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Écouter les conversations dès qu'elles sont chargées
     _listenToAllConversations();
   }
-
+  
   void _setupGlobalCallListener() {
     if (_callbacksSetup) return;
     _callbacksSetup = true;
@@ -45,21 +45,74 @@ class _HomePageState extends ConsumerState<HomePage> {
       _callService.setCurrentUser(user.id);
     }
 
-    // Quand un appel entrant arrive globalement
     _callService.onIncomingCall = (IncomingCallInfo info) {
       if (!mounted) return;
       setState(() => _globalIncomingCall = info);
     };
 
-    // Quand l'appel est terminé/rejeté
     _callService.onCallStatusChanged = (String status) {
       if (!mounted) return;
       if (status == 'ended' || status == 'rejected') {
         _callService.stopIncomingRingtone();
         setState(() => _globalIncomingCall = null);
-        //if (!kIsWeb) {
-        //  NotificationService().cancelAll();
-        //}
+        NotificationService().cancelAll();
+      }
+    };
+  }
+
+  /// FIX: Brancher les callbacks de tap notification FCM (appel entrant + message)
+  void _setupNotificationCallbacks() {
+    NotificationService().onIncomingCallNotification = (data) {
+      if (!mounted) return;
+      final action = data['_action'] as String?;
+
+      // Si l'utilisateur a tapé "Répondre" depuis la notification système
+      if (action == 'answer') {
+        final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
+        final convId =
+            int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
+        if (callId > 0 && convId > 0) {
+          _acceptCallFromNotification(
+            callId: callId,
+            conversationId: convId,
+            callerName: data['caller_name'] ?? 'Appel entrant',
+            callType: data['call_type'] ?? 'audio',
+          );
+        }
+        return;
+      }
+
+      if (action == 'reject') {
+        final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
+        if (callId > 0) _callService.rejectCall(callId);
+        return;
+      }
+
+      // Appel entrant via FCM (app au premier plan)
+      // Le WebSocket devrait déjà avoir déclenché onIncomingCall,
+      // mais au cas où le WS ne serait pas connecté, on le gère ici aussi
+      final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
+      final convId =
+          int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
+      if (callId > 0 && _globalIncomingCall == null) {
+        final info = IncomingCallInfo(
+          callId: callId,
+          conversationId: convId,
+          callerName: data['caller_name'] ?? 'Appel entrant',
+          callType: data['call_type'] ?? 'audio',
+          callerId: 0, // inconnu depuis FCM seul
+          raw: data,
+        );
+        setState(() => _globalIncomingCall = info);
+        _callService.startIncomingRingtone();
+      }
+    };
+
+    NotificationService().onMessageTap = (data) {
+      if (!mounted) return;
+      final convId = data['conversation_id'];
+      if (convId != null) {
+        context.push('/conversations/$convId');
       }
     };
   }
@@ -73,10 +126,14 @@ class _HomePageState extends ConsumerState<HomePage> {
     });
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // ACTIONS APPEL
+  // ─────────────────────────────────────────────────────────────
+
   Future<void> _acceptGlobalCall(IncomingCallInfo info) async {
     setState(() => _globalIncomingCall = null);
     _callService.stopIncomingRingtone();
-    //if (!kIsWeb) NotificationService().cancelCallNotification(info.callId);
+    NotificationService().cancelCallNotification(info.callId);
 
     final currentUser = ref.read(currentUserProvider);
     final success = await _callService.answerCall(
@@ -86,19 +143,21 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
 
     if (success && mounted) {
-      // Récupérer les participants de la conversation
       final conversationsAsync = ref.read(conversationsProvider);
       List<UserModel> participants = [];
       conversationsAsync.whenData((conversations) {
-        final conv = conversations.where((c) => c.id == info.conversationId).firstOrNull;
+        final conv = conversations
+            .where((c) => c.id == info.conversationId)
+            .firstOrNull;
         participants = conv?.participants ?? [];
       });
 
-      final callerData = info.raw['caller'];
       UserModel? caller;
+      final callerData = info.raw['caller'];
       if (callerData is Map) {
         try {
-          caller = UserModel.fromJson(Map<String, dynamic>.from(callerData));
+          caller =
+              UserModel.fromJson(Map<String, dynamic>.from(callerData));
         } catch (_) {}
       }
 
@@ -113,22 +172,40 @@ class _HomePageState extends ConsumerState<HomePage> {
         createdAt: DateTime.now(),
       );
 
-      context.push(
-        '/calls/${info.callId}',
-        extra: {
-          'call': call,
-          'participants': participants,
-        },
-      );
+      context.push('/calls/${info.callId}', extra: {
+        'call': call,
+        'participants': participants,
+      });
     }
+  }
+
+  Future<void> _acceptCallFromNotification({
+    required int callId,
+    required int conversationId,
+    required String callerName,
+    required String callType,
+  }) async {
+    final info = IncomingCallInfo(
+      callId: callId,
+      conversationId: conversationId,
+      callerName: callerName,
+      callType: callType,
+      callerId: 0,
+      raw: {'caller_name': callerName, 'call_type': callType},
+    );
+    await _acceptGlobalCall(info);
   }
 
   Future<void> _rejectGlobalCall(IncomingCallInfo info) async {
     setState(() => _globalIncomingCall = null);
     _callService.stopIncomingRingtone();
-    //if (!kIsWeb) NotificationService().cancelCallNotification(info.callId);
+    NotificationService().cancelCallNotification(info.callId);
     await _callService.rejectCall(info.callId);
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // NAVIGATION
+  // ─────────────────────────────────────────────────────────────
 
   int _locationToIndex(String location) {
     if (location.startsWith('/groups')) return 1;
@@ -139,22 +216,13 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   void _onNavTap(BuildContext context, int index, bool isAdmin) {
     switch (index) {
-      case 0:
-        context.go('/home');
-        break;
-      case 1:
-        context.go('/groups');
-        break;
-      case 2:
-        context.go('/notifications');
-        break;
-      case 3:
-        if (isAdmin) context.go('/admin');
-        break;
+      case 0: context.go('/home'); break;
+      case 1: context.go('/groups'); break;
+      case 2: context.go('/notifications'); break;
+      case 3: if (isAdmin) context.go('/admin'); break;
     }
   }
 
-  // Écouter les nouvelles conversations chargées pour les abonner
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
@@ -163,7 +231,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     final currentIndex = _locationToIndex(location);
     final isWide = MediaQuery.of(context).size.width > 768;
 
-    // Écouter les conversations dès qu'elles changent
+    // Écouter les nouvelles conversations pour les abonner au WS
     ref.listen(conversationsProvider, (_, next) {
       next.whenData((conversations) {
         for (final conv in conversations) {
@@ -191,7 +259,6 @@ class _HomePageState extends ConsumerState<HomePage> {
       );
     }
 
-    // Bannière d'appel entrant global — visible depuis n'importe quelle page
     return Stack(
       children: [
         layout,
@@ -264,7 +331,6 @@ class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
             child: SafeArea(
               bottom: false,
               child: Row(children: [
-                // Icône pulsante
                 _PulsingIcon(
                   icon: widget.info.callType == 'video'
                       ? Icons.videocam_rounded
@@ -295,7 +361,6 @@ class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
                     ],
                   ),
                 ),
-                // Bouton refuser
                 GestureDetector(
                   onTap: widget.onReject,
                   child: Container(
@@ -310,7 +375,6 @@ class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
                         color: Colors.white, size: 22),
                   ),
                 ),
-                // Bouton accepter
                 GestureDetector(
                   onTap: widget.onAccept,
                   child: Container(
@@ -490,12 +554,12 @@ class _WebLayout extends ConsumerWidget {
           Expanded(
             child: Row(
               children: [
-                // ─── Sidebar ──────────────────────────────────
                 Container(
                   width: 260,
                   decoration: const BoxDecoration(
                     color: AppColors.white,
-                    border: Border(right: BorderSide(color: AppColors.grey200)),
+                    border:
+                        Border(right: BorderSide(color: AppColors.grey200)),
                   ),
                   child: Column(
                     children: [
@@ -503,7 +567,8 @@ class _WebLayout extends ConsumerWidget {
                         height: 64,
                         padding: const EdgeInsets.symmetric(horizontal: 20),
                         decoration: const BoxDecoration(
-                          border: Border(bottom: BorderSide(color: AppColors.grey200)),
+                          border: Border(
+                              bottom: BorderSide(color: AppColors.grey200)),
                         ),
                         child: Row(
                           children: [
@@ -532,25 +597,19 @@ class _WebLayout extends ConsumerWidget {
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'Téléphonie',
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppColors.grey800,
-                                    fontFamily: 'Nunito',
-                                  ),
-                                ),
-                                Text(
-                                  'CAP',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppColors.primary,
-                                    letterSpacing: 2,
-                                    fontFamily: 'Nunito',
-                                  ),
-                                ),
+                                Text('Téléphonie',
+                                    style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w800,
+                                        color: AppColors.grey800,
+                                        fontFamily: 'Nunito')),
+                                Text('CAP',
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.primary,
+                                        letterSpacing: 2,
+                                        fontFamily: 'Nunito')),
                               ],
                             ),
                           ],
@@ -563,42 +622,40 @@ class _WebLayout extends ConsumerWidget {
                               horizontal: 12, vertical: 4),
                           children: [
                             _SidebarItem(
-                              icon: Icons.chat_bubble_outline_rounded,
-                              selectedIcon: Icons.chat_bubble_rounded,
-                              label: 'Messages',
-                              selected: currentIndex == 0,
-                              onTap: () => onNavTap(0),
-                            ),
+                                icon: Icons.chat_bubble_outline_rounded,
+                                selectedIcon: Icons.chat_bubble_rounded,
+                                label: 'Messages',
+                                selected: currentIndex == 0,
+                                onTap: () => onNavTap(0)),
                             _SidebarItem(
-                              icon: Icons.group_outlined,
-                              selectedIcon: Icons.group_rounded,
-                              label: 'Groupes',
-                              selected: currentIndex == 1,
-                              onTap: () => onNavTap(1),
-                            ),
+                                icon: Icons.group_outlined,
+                                selectedIcon: Icons.group_rounded,
+                                label: 'Groupes',
+                                selected: currentIndex == 1,
+                                onTap: () => onNavTap(1)),
                             _SidebarItem(
-                              icon: Icons.notifications_outlined,
-                              selectedIcon: Icons.notifications_rounded,
-                              label: 'Notifications',
-                              selected: currentIndex == 2,
-                              onTap: () => onNavTap(2),
-                              badge: unread > 0 ? unread : null,
-                            ),
+                                icon: Icons.notifications_outlined,
+                                selectedIcon: Icons.notifications_rounded,
+                                label: 'Notifications',
+                                selected: currentIndex == 2,
+                                onTap: () => onNavTap(2),
+                                badge: unread > 0 ? unread : null),
                             if (isAdmin)
                               _SidebarItem(
-                                icon: Icons.admin_panel_settings_outlined,
-                                selectedIcon: Icons.admin_panel_settings_rounded,
-                                label: 'Administration',
-                                selected: currentIndex == 3,
-                                onTap: () => onNavTap(3),
-                              ),
+                                  icon: Icons.admin_panel_settings_outlined,
+                                  selectedIcon:
+                                      Icons.admin_panel_settings_rounded,
+                                  label: 'Administration',
+                                  selected: currentIndex == 3,
+                                  onTap: () => onNavTap(3)),
                           ],
                         ),
                       ),
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: const BoxDecoration(
-                          border: Border(top: BorderSide(color: AppColors.grey200)),
+                          border:
+                              Border(top: BorderSide(color: AppColors.grey200)),
                         ),
                         child: Row(
                           children: [
@@ -606,19 +663,15 @@ class _WebLayout extends ConsumerWidget {
                               width: 36,
                               height: 36,
                               decoration: const BoxDecoration(
-                                color: AppColors.primary,
-                                shape: BoxShape.circle,
-                              ),
+                                  color: AppColors.primary,
+                                  shape: BoxShape.circle),
                               child: Center(
-                                child: Text(
-                                  user?.initials ?? '?',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700,
-                                    fontFamily: 'Nunito',
-                                  ),
-                                ),
+                                child: Text(user?.initials ?? '?',
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w700,
+                                        fontFamily: 'Nunito')),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -626,25 +679,19 @@ class _WebLayout extends ConsumerWidget {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    user?.fullName ?? '',
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.grey800,
-                                      fontFamily: 'Nunito',
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  Text(
-                                    user?.email ?? '',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: AppColors.grey400,
-                                      fontFamily: 'Nunito',
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
+                                  Text(user?.fullName ?? '',
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.grey800,
+                                          fontFamily: 'Nunito'),
+                                      overflow: TextOverflow.ellipsis),
+                                  Text(user?.email ?? '',
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          color: AppColors.grey400,
+                                          fontFamily: 'Nunito'),
+                                      overflow: TextOverflow.ellipsis),
                                 ],
                               ),
                             ),
@@ -672,8 +719,7 @@ class _WebLayout extends ConsumerWidget {
 }
 
 class _SidebarItem extends StatelessWidget {
-  final IconData icon;
-  final IconData selectedIcon;
+  final IconData icon, selectedIcon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
@@ -699,43 +745,41 @@ class _SidebarItem extends StatelessWidget {
           onTap: onTap,
           borderRadius: BorderRadius.circular(12),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             child: Row(
               children: [
-                Icon(
-                  selected ? selectedIcon : icon,
-                  color: selected ? AppColors.primary : AppColors.grey500,
-                  size: 20,
-                ),
+                Icon(selected ? selectedIcon : icon,
+                    color:
+                        selected ? AppColors.primary : AppColors.grey500,
+                    size: 20),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                      color: selected ? AppColors.primary : AppColors.grey600,
-                      fontFamily: 'Nunito',
-                    ),
-                  ),
+                  child: Text(label,
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: selected
+                              ? AppColors.primary
+                              : AppColors.grey600,
+                          fontFamily: 'Nunito')),
                 ),
                 if (badge != null)
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppColors.primary,
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: Text(
-                      '$badge',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        fontFamily: 'Nunito',
-                      ),
-                    ),
+                    child: Text('$badge',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            fontFamily: 'Nunito')),
                   ),
               ],
             ),
@@ -761,22 +805,16 @@ class _WebFooter extends StatelessWidget {
           Text(
             '© ${DateTime.now().year} Téléphonie CAP — Tous droits réservés',
             style: const TextStyle(
-              fontSize: 12,
-              color: AppColors.grey400,
-              fontFamily: 'Nunito',
-            ),
+                fontSize: 12, color: AppColors.grey400, fontFamily: 'Nunito'),
           ),
           const SizedBox(width: 16),
           const Text('•', style: TextStyle(color: AppColors.grey300)),
           const SizedBox(width: 16),
-          const Text(
-            'Version 1.0.0',
-            style: TextStyle(
-              fontSize: 12,
-              color: AppColors.grey400,
-              fontFamily: 'Nunito',
-            ),
-          ),
+          const Text('Version 1.0.0',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: AppColors.grey400,
+                  fontFamily: 'Nunito')),
         ],
       ),
     );
