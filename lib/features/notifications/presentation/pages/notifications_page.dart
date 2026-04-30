@@ -10,7 +10,8 @@ class NotificationsPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final notifAsync = ref.watch(notificationsProvider);
+    final notifState = ref.watch(notificationsProvider);
+    final notifAsync = notifState.notifications;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -19,16 +20,20 @@ class NotificationsPage extends ConsumerWidget {
         backgroundColor: AppColors.white,
         actions: [
           TextButton(
-            onPressed: () => ref.read(notificationsProvider.notifier).markAllRead(),
-            child: const Text('Tout lire', style: TextStyle(color: AppColors.primary)),
+            onPressed: () =>
+                ref.read(notificationsProvider.notifier).markAllRead(),
+            child: const Text('Tout lire',
+                style: TextStyle(color: AppColors.primary)),
           ),
         ],
       ),
       body: notifAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator(color: AppColors.primary)),
+        loading: () => const Center(
+            child: CircularProgressIndicator(color: AppColors.primary)),
         error: (e, _) => Center(
           child: TextButton(
-            onPressed: () => ref.read(notificationsProvider.notifier).load(),
+            onPressed: () =>
+                ref.read(notificationsProvider.notifier).load(),
             child: const Text('Réessayer'),
           ),
         ),
@@ -63,13 +68,14 @@ class NotificationsPage extends ConsumerWidget {
 
           return RefreshIndicator(
             color: AppColors.primary,
-            onRefresh: () => ref.read(notificationsProvider.notifier).load(),
+            onRefresh: () =>
+                ref.read(notificationsProvider.notifier).load(),
             child: ListView.separated(
               padding: const EdgeInsets.all(16),
               itemCount: notifications.length,
               separatorBuilder: (_, __) => const SizedBox(height: 8),
-              itemBuilder: (context, index) =>
-                  _NotificationCard(notification: notifications[index]),
+              itemBuilder: (context, index) => _NotificationCard(
+                  notification: notifications[index]),
             ),
           );
         },
@@ -87,17 +93,23 @@ class _NotificationCard extends ConsumerWidget {
     return GestureDetector(
       onTap: () {
         if (!notification.isRead) {
-          ref.read(notificationsProvider.notifier).markRead(notification.id);
+          ref
+              .read(notificationsProvider.notifier)
+              .markRead(notification.id);
         }
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: notification.isRead ? AppColors.white : AppColors.primarySurface,
+          color: notification.isRead
+              ? AppColors.white
+              : AppColors.primarySurface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: notification.isRead ? AppColors.grey200 : AppColors.primaryMid,
+            color: notification.isRead
+                ? AppColors.grey200
+                : AppColors.primaryMid,
           ),
         ),
         child: Row(
@@ -107,12 +119,16 @@ class _NotificationCard extends ConsumerWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: notification.isRead ? AppColors.grey100 : AppColors.primaryMid,
+                color: notification.isRead
+                    ? AppColors.grey100
+                    : AppColors.primaryMid,
                 shape: BoxShape.circle,
               ),
               child: Icon(
                 _getIcon(),
-                color: notification.isRead ? AppColors.grey400 : AppColors.primary,
+                color: notification.isRead
+                    ? AppColors.grey400
+                    : AppColors.primary,
                 size: 20,
               ),
             ),
@@ -125,7 +141,9 @@ class _NotificationCard extends ConsumerWidget {
                     notification.title,
                     style: TextStyle(
                       fontSize: 14,
-                      fontWeight: notification.isRead ? FontWeight.w600 : FontWeight.w700,
+                      fontWeight: notification.isRead
+                          ? FontWeight.w600
+                          : FontWeight.w700,
                       color: AppColors.grey800,
                       fontFamily: 'Nunito',
                     ),
@@ -170,7 +188,9 @@ class _NotificationCard extends ConsumerWidget {
   }
 
   IconData _getIcon() {
-    if (notification.type.contains('Message')) return Icons.chat_bubble_outline_rounded;
+    if (notification.type.contains('Message')) {
+      return Icons.chat_bubble_outline_rounded;
+    }
     if (notification.type.contains('Call')) return Icons.call_outlined;
     return Icons.notifications_outlined;
   }

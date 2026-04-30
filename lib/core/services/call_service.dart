@@ -3,13 +3,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart'
     if (dart.library.html) '../stubs/webrtc_stub.dart';
 import '../api/api_client.dart';
+// CORRECTION: Importer le BON websocket_service
 import '../websocket/websocket_service.dart';
 import 'ringtone_service.dart';
 
-/// États d'un appel WebRTC
 enum CallState { idle, calling, ringing, active, ended }
 
-/// Données minimales d'un appel entrant
 class IncomingCallInfo {
   final int callId;
   final int conversationId;
@@ -37,29 +36,24 @@ class CallService extends ChangeNotifier {
   final WebSocketService _ws = WebSocketService();
   final RingtoneService _ringtone = RingtoneService();
 
-  // ── État ─────────────────────────────────────────────────────
   CallState _state = CallState.idle;
   int? _currentCallId;
   int? _currentConversationId;
   String _callType = 'audio';
   IncomingCallInfo? _incomingCallInfo;
 
-  // ── WebRTC ───────────────────────────────────────────────────
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   MediaStream? _remoteStream;
 
-  // Callbacks UI
   Function(MediaStream)? onLocalStream;
   Function(MediaStream)? onRemoteStream;
   Function(IncomingCallInfo)? onIncomingCall;
   Function(String status)? onCallStatusChanged;
 
-  // ICE candidate queue
   final List<RTCIceCandidate> _pendingCandidates = [];
   bool _remoteDescriptionSet = false;
 
-  // ── Getters ──────────────────────────────────────────────────
   CallState get state => _state;
   int? get currentCallId => _currentCallId;
   IncomingCallInfo? get incomingCallInfo => _incomingCallInfo;
@@ -81,13 +75,12 @@ class CallService extends ChangeNotifier {
     'sdpSemantics': 'unified-plan',
   };
 
-  // ── Écouter les événements WebSocket pour une conversation ────
   void listenToConversation(int conversationId) {
     _currentConversationId = conversationId;
     _ws.subscribeToConversation(conversationId, events: {
       'call.initiated': _onCallInitiated,
       'call.status': _onCallStatusUpdated,
-      'call.signal': _onCallSignal,
+      'call.signal': (data) => _onCallSignal(data),
     });
   }
 
@@ -95,7 +88,6 @@ class CallService extends ChangeNotifier {
     _ws.unsubscribeFromConversation(conversationId);
   }
 
-  // ── Appel sortant ─────────────────────────────────────────────
   Future<Map<String, dynamic>?> initiateCall(
     int conversationId,
     String type,
@@ -135,7 +127,6 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── Répondre à un appel ──────────────────────────────────────
   Future<bool> answerCall(
       int callId, int conversationId, int currentUserId) async {
     if (_state == CallState.active || _state == CallState.calling) {
@@ -170,7 +161,6 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── Rejeter un appel ─────────────────────────────────────────
   Future<void> rejectCall(int callId) async {
     try {
       if (!kIsWeb) await _ringtone.stopRinging();
@@ -183,7 +173,6 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── Terminer un appel ─────────────────────────────────────────
   Future<void> endCall() async {
     try {
       if (!kIsWeb) await _ringtone.stopRinging();
@@ -197,12 +186,14 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── Router les signaux WebRTC reçus via WebSocket ─────────────
-  void onCallSignalReceived(Map<String, dynamic> data) {
-    _onCallSignal(data);
+  // CORRECTION: Accepte dynamic et parse proprement
+  void onCallSignalReceived(dynamic rawData) {
+    final data = _toMap(rawData);
+    if (data.isNotEmpty) {
+      _onCallSignal(data);
+    }
   }
 
-  // ── Médias locaux ─────────────────────────────────────────────
   Future<void> _setupLocalStream({required bool video}) async {
     final constraints = <String, dynamic>{
       'audio': true,
@@ -214,7 +205,6 @@ class CallService extends ChangeNotifier {
     onLocalStream?.call(_localStream!);
   }
 
-  // ── Connexion WebRTC ─────────────────────────────────────────
   Future<void> _setupPeerConnection(
     int conversationId,
     int currentUserId, {
@@ -267,7 +257,6 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── Gestionnaires événements WebSocket ─────────────────────
   void _onCallInitiated(Map<String, dynamic> data) {
     _callType = data['type'] as String? ?? 'audio';
 
@@ -313,21 +302,33 @@ class CallService extends ChangeNotifier {
   }
 
   Future<void> _onCallSignal(Map<String, dynamic> data) async {
-    if (_peerConnection == null) return;
+    // CORRECTION: Vérifier que peerConnection existe avant d'utiliser
+    if (_peerConnection == null) {
+      debugPrint('[WebRTC] _onCallSignal: peerConnection est null, signal ignoré');
+      return;
+    }
 
     final signalType = data['signal_type'] as String? ?? '';
-    final payload = data['payload'] as Map<String, dynamic>? ?? {};
+    final rawPayload = data['payload'];
+    final payload = _toMap(rawPayload);
+
+    if (payload.isEmpty) {
+      debugPrint('[WebRTC] Payload vide pour signal: $signalType');
+      return;
+    }
 
     try {
       switch (signalType) {
         case 'offer':
+          final sdp = payload['sdp'] as String?;
+          final type = payload['type'] as String?;
+          if (sdp == null || type == null) break;
+
           await _peerConnection!.setRemoteDescription(
-            RTCSessionDescription(
-              payload['sdp'] as String,
-              payload['type'] as String,
-            ),
+            RTCSessionDescription(sdp, type),
           );
           _remoteDescriptionSet = true;
+
           for (final c in _pendingCandidates) {
             await _peerConnection!.addCandidate(c);
           }
@@ -344,13 +345,15 @@ class CallService extends ChangeNotifier {
           break;
 
         case 'answer':
+          final sdp = payload['sdp'] as String?;
+          final type = payload['type'] as String?;
+          if (sdp == null || type == null) break;
+
           await _peerConnection!.setRemoteDescription(
-            RTCSessionDescription(
-              payload['sdp'] as String,
-              payload['type'] as String,
-            ),
+            RTCSessionDescription(sdp, type),
           );
           _remoteDescriptionSet = true;
+
           for (final c in _pendingCandidates) {
             await _peerConnection!.addCandidate(c);
           }
@@ -362,24 +365,35 @@ class CallService extends ChangeNotifier {
         case 'ice-candidate':
           final candidateStr = payload['candidate'] as String?;
           if (candidateStr == null || candidateStr.isEmpty) break;
+
           final candidate = RTCIceCandidate(
             candidateStr,
             payload['sdpMid'] as String?,
             payload['sdpMLineIndex'] as int?,
           );
+
           if (_remoteDescriptionSet) {
             await _peerConnection!.addCandidate(candidate);
           } else {
             _pendingCandidates.add(candidate);
           }
           break;
+
+        default:
+          debugPrint('[WebRTC] Signal type inconnu: $signalType');
       }
     } catch (e) {
-      debugPrint('[WebRTC] Signal handling error: $e');
+      debugPrint('[WebRTC] Signal handling error ($signalType): $e');
     }
   }
 
-  // ── Contrôles audio/vidéo ─────────────────────────────────────
+  // CORRECTION: Helper pour convertir dynamic → Map<String, dynamic>
+  Map<String, dynamic> _toMap(dynamic value) {
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map) return Map<String, dynamic>.from(value);
+    return {};
+  }
+
   void toggleMute(bool muted) {
     _localStream?.getAudioTracks().forEach((t) => t.enabled = !muted);
   }
@@ -396,7 +410,6 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ── Nettoyage ─────────────────────────────────────────────────
   Future<void> _cleanup() async {
     try {
       _localStream?.getTracks().forEach((t) => t.stop());

@@ -44,8 +44,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   ConversationModel? _conversation;
   Timer? _typingTimer;
   bool _isSendingFile = false;
+  bool _wsSubscribed = false; // CORRECTION: éviter double abonnement
 
-  /// Appel entrant visible dans la page chat
   IncomingCallInfo? _pendingIncomingCall;
 
   @override
@@ -89,15 +89,26 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
   }
 
-  // ── WebSocket ──────────────────────────────────────────────────
   void _subscribeToWebSocket() {
+    // CORRECTION: éviter double abonnement
+    if (_wsSubscribed) return;
+    _wsSubscribed = true;
+
     final currentUser = ref.read(currentUserProvider);
 
     _ws.subscribeToConversation(widget.conversationId, events: {
-      // Nouveau message
       'message.sent': (data) {
         if (!mounted) return;
-        final msg = MessageModel.fromJson(data);
+
+        // CORRECTION: Cast sécurisé
+        MessageModel msg;
+        try {
+          msg = MessageModel.fromJson(data);
+        } catch (e) {
+          debugPrint('[Chat] Erreur parse message: $e');
+          return;
+        }
+
         if (msg.senderId != currentUser?.id) {
           ref
               .read(messagesProvider(widget.conversationId).notifier)
@@ -117,7 +128,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ref.read(conversationsProvider.notifier).load();
       },
 
-      // Indicateur de frappe
       'user.typing': (data) {
         if (!mounted) return;
         final userId = data['user_id'] as int?;
@@ -139,31 +149,43 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         }
       },
 
-      // Appel entrant — IMPORTANT: on filtre ici via callerId
       'call.initiated': (data) {
         if (!mounted) return;
-        final callerId = data['caller_id'] as int?
-            ?? (data['caller'] as Map<String, dynamic>?)?['id'] as int?;
 
-        // Ignorer si c'est MOI qui lance l'appel (broadcast.toOthers() devrait
-        // déjà le faire, mais on double-vérifie côté client)
+        // CORRECTION: Cast sécurisé du caller_id
+        final callerRaw = data['caller'];
+        int? callerId;
+        if (data['caller_id'] is int) {
+          callerId = data['caller_id'] as int;
+        } else if (callerRaw is Map) {
+          callerId = callerRaw['id'] as int?;
+        }
+
+        // Ignorer si c'est MOI qui lance l'appel
         if (callerId == currentUser?.id) return;
 
-        // Déjà en appel → rejeter automatiquement
         if (_callService.isBusy) {
-          final callId = data['call_id'] as int? ?? data['id'] as int? ?? 0;
+          final callId = data['call_id'] as int?
+              ?? data['id'] as int?
+              ?? 0;
           _autoRejectBusy(callId);
           return;
         }
 
+        final callerName = (callerRaw is Map ? callerRaw['full_name'] : null)
+                as String?
+            ?? data['caller_name'] as String?
+            ?? 'Appel entrant';
+
+        final callId = data['call_id'] as int?
+            ?? data['id'] as int?
+            ?? 0;
+
         final info = IncomingCallInfo(
-          callId: data['call_id'] as int? ?? data['id'] as int? ?? 0,
-          conversationId:
-              data['conversation_id'] as int? ?? widget.conversationId,
-          callerName: (data['caller'] as Map<String, dynamic>?)?['full_name']
-                  as String? ??
-              data['caller_name'] as String? ??
-              'Appel entrant',
+          callId: callId,
+          conversationId: data['conversation_id'] as int?
+              ?? widget.conversationId,
+          callerName: callerName,
           callType: data['type'] as String? ?? 'audio',
           callerId: callerId ?? 0,
           raw: data,
@@ -194,18 +216,20 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         }
       },
 
+      // CORRECTION: Filtrer par sender_id pour ne pas traiter ses propres signaux
       'call.signal': (data) {
+        if (!mounted) return;
         final senderId = data['sender_id'] as int?;
-        if (senderId != currentUser?.id) {
-          _callService.onCallSignalReceived(data);
+        if (senderId != null && senderId == currentUser?.id) {
+          // C'est mon propre signal retransmis, ignorer
+          return;
         }
+        _callService.onCallSignalReceived(data);
       },
     });
   }
 
   void _setupCallServiceCallbacks() {
-    // Ne pas re-enregistrer onIncomingCall ici car on gère déjà 'call.initiated'
-    // via WebSocket ci-dessus. Éviter la double bannière.
     _callService.onCallStatusChanged = (status) {
       if (!mounted) return;
       if (status == 'ended' || status == 'rejected') {
@@ -243,11 +267,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     );
 
     if (success && mounted) {
-      // Construire un CallModel avec le caller correct (celui qui a appelé)
-      final callerData = info.raw['caller'] as Map<String, dynamic>?;
+      final callerData = info.raw['caller'];
       UserModel? caller;
-      if (callerData != null) {
-        caller = UserModel.fromJson(callerData);
+      if (callerData is Map<String, dynamic>) {
+        try {
+          caller = UserModel.fromJson(callerData);
+        } catch (_) {}
+      } else if (callerData is Map) {
+        try {
+          caller = UserModel.fromJson(Map<String, dynamic>.from(callerData));
+        } catch (_) {}
       }
 
       final call = CallModel(
@@ -265,7 +294,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         '/calls/${info.callId}',
         extra: {
           'call': call,
-          'participants': _conversation?.participants ?? [],
+          'participants': _conversation?.participants ?? <UserModel>[],
         },
       );
     }
@@ -328,7 +357,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     });
   }
 
-  // ── Media Picking ─────────────────────────────────────────────
   void _showAttachmentMenu() {
     showModalBottomSheet(
       context: context,
@@ -479,7 +507,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     return 'file';
   }
 
-  // ── Appel sortant ─────────────────────────────────────────────
   Future<void> _initiateCall(String type) async {
     final currentUser = ref.read(currentUserProvider);
     if (currentUser == null) return;
@@ -497,11 +524,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       );
 
       if (callData != null && mounted) {
-        // Construire le CallModel depuis la réponse API
         final call = CallModel.fromJson(callData);
-
-        // Naviguer vers CallPage en passant les participants pour
-        // que l'appelant voie le nom du destinataire
         context.push(
           '/calls/${call.id}',
           extra: {
@@ -639,8 +662,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                       messages, currentUser?.id ?? 0),
                 ),
               ),
-
-              // Indicateur envoi fichier
               if (_isSendingFile)
                 Container(
                   padding: const EdgeInsets.symmetric(
@@ -660,13 +681,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                             fontSize: 13)),
                   ]),
                 ),
-
               if (_otherTyping) _buildTypingIndicator(),
               _buildInputArea(),
             ],
           ),
-
-          // Bannière appel entrant
           if (_pendingIncomingCall != null)
             _IncomingCallBanner(
               info: _pendingIncomingCall!,
@@ -1067,7 +1085,6 @@ class _IncomingCallBannerState extends State<_IncomingCallBanner>
   }
 }
 
-// ─── Attachment Sheet ─────────────────────────────────────────
 class _AttachmentSheet extends StatelessWidget {
   final VoidCallback onPickImage;
   final VoidCallback onPickFile;
@@ -1170,7 +1187,6 @@ class _AttachOption extends StatelessWidget {
   }
 }
 
-// ─── Typing dots ──────────────────────────────────────────────
 class _TypingDots extends StatefulWidget {
   @override
   State<_TypingDots> createState() => _TypingDotsState();
@@ -1220,7 +1236,6 @@ class _TypingDotsState extends State<_TypingDots>
   }
 }
 
-// ─── Message Bubble ───────────────────────────────────────────
 class _MessageBubble extends StatelessWidget {
   final MessageModel message;
   final bool isMine;

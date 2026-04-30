@@ -13,15 +13,15 @@
   <title>Téléphonie CAP</title>
   <link rel="manifest" href="manifest.json">
 
-
   <script charset="utf-8" src="https://js.pusher.com/8.3.0/pusher.min.js"></script>
   <script>
-    window.REVERB_HOST    = '192.168.100.195'; 
-    window.REVERB_PORT    = 8080;              
-    window.REVERB_APP_KEY = 'xtsedffitwzc6vpwl7tz'; 
-    window.REVERB_SCHEME  = 'http';          
-    
-    // Override le constructeur Pusher pour rediriger vers Reverb local
+
+    window.REVERB_HOST    = '192.168.100.201';
+    window.REVERB_PORT    = 8080;
+    window.REVERB_APP_KEY = 'xtsedffitwzc6vpwl7tz';
+    window.REVERB_SCHEME  = 'http';
+
+
     const _OriginalPusher = window.Pusher;
     window.Pusher = function(apiKey, options) {
       const reverbOptions = Object.assign({}, options, {
@@ -30,14 +30,12 @@
         wssPort:           window.REVERB_PORT,
         forceTLS:          window.REVERB_SCHEME === 'https',
         disableStats:      true,
-        
         enabledTransports: window.REVERB_SCHEME === 'https' ? ['wss'] : ['ws'],
       });
       return new _OriginalPusher(apiKey, reverbOptions);
     };
-    // Copier les propriétés statiques (Pusher.Channel, etc.)
     Object.assign(window.Pusher, _OriginalPusher);
-    window.Pusher.logToConsole = false; // passer à true pour déboguer le WS
+    window.Pusher.logToConsole = false;
   </script>
 </head>
 <body>

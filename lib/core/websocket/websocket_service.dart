@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:pusher_channels_flutter/pusher_channels_flutter.dart';
@@ -12,40 +13,31 @@ class WebSocketService {
 
   final PusherChannelsFlutter _pusher = PusherChannelsFlutter.getInstance();
   bool _initialized = false;
+  bool _connecting = false;
   String? _authToken;
 
+  // Stocker les subscriptions pour re-abonnement après reconnexion
   final Map<String, PusherChannel> _channels = {};
+  final Map<String, Map<String, EventCallback>> _pendingSubscriptions = {};
 
   Future<void> init(String authToken) async {
     _authToken = authToken;
+
+    // CORRECTION: Eviter double init simultané
+    if (_connecting) return;
     if (_initialized) return;
+
+    _connecting = true;
 
     try {
       await _pusher.init(
         apiKey: AppConstants.reverbAppKey,
-
-        // ✅ CORRECTION PRINCIPALE :
-        //    pusher_channels_flutter ne supporte PAS les paramètres :
-        //      ❌ host   → n'existe pas dans cette lib
-        //      ❌ port   → n'existe pas dans cette lib
-        //      ❌ encrypted → n'existe pas dans cette lib
-        //
-        //    Les paramètres corrects sont :
-        //      ✅ cluster  → requis, 'mt1' si pas de cluster Pusher Cloud
-        //      ✅ useTLS   → remplace 'encrypted'
-        //
-        //    Pour pointer vers Reverb local sur Android/iOS :
-        //      → Le package mobile ne supporte pas de host custom nativement.
-        //      → Solution : utiliser un tunnel HTTP (ex: ngrok) qui expose
-        //        Reverb sur une URL publique, puis mettre cette URL dans reverbHost.
-        //      → Pour le WEB : l'override se fait dans index.html (voir ce fichier).
         cluster: AppConstants.reverbCluster,
         useTLS: AppConstants.reverbScheme == 'https',
 
         authEndpoint:
             '${AppConstants.baseUrl.replaceAll('/api', '')}/broadcasting/auth',
 
-        // ✅ Headers envoyés à authEndpoint pour valider le token
         onAuthorizer: (channelName, socketId, options) async {
           return {
             'headers': {
@@ -58,23 +50,44 @@ class WebSocketService {
 
         onConnectionStateChange: (currentState, previousState) {
           debugPrint('[WS] $previousState → $currentState');
+
+          if (currentState == 'CONNECTED') {
+            _initialized = true;
+            _connecting = false;
+            // CORRECTION: Re-abonner aux channels après reconnexion
+            _resubscribeAll();
+          }
+
           if (currentState == 'DISCONNECTED' || currentState == 'FAILED') {
             _initialized = false;
+            _connecting = false;
+            _channels.clear();
           }
         },
 
         onError: (message, code, error) {
           debugPrint('[WS] Erreur $code: $message — $error');
+          _connecting = false;
         },
       );
 
       await _pusher.connect();
-      _initialized = true;
-      debugPrint('[WS] Connecté (cluster: ${AppConstants.reverbCluster})');
+      // Ne pas mettre _initialized = true ici, attendre onConnectionStateChange CONNECTED
     } catch (e) {
       _initialized = false;
+      _connecting = false;
       debugPrint('[WS] Init error: $e');
       rethrow;
+    }
+  }
+
+  // CORRECTION: Re-abonnement automatique après reconnexion
+  Future<void> _resubscribeAll() async {
+    final pending = Map<String, Map<String, EventCallback>>.from(
+        _pendingSubscriptions);
+    for (final entry in pending.entries) {
+      await _subscribePresence(entry.key.replaceFirst('presence-', ''),
+          events: entry.value);
     }
   }
 
@@ -97,10 +110,14 @@ class WebSocketService {
     required Map<String, EventCallback> events,
   }) async {
     final channelName = 'presence-$name';
+
+    // Stocker pour re-abonnement
+    _pendingSubscriptions[channelName] = events;
+
     if (_channels.containsKey(channelName)) return;
 
     if (!_initialized) {
-      debugPrint("[WS] Non connecté — impossible de s'abonner à $channelName");
+      debugPrint("[WS] Non connecté — subscription en attente: $channelName");
       return;
     }
 
@@ -111,17 +128,7 @@ class WebSocketService {
           try {
             final handler = events[event.eventName];
             if (handler != null) {
-              Map<String, dynamic> data;
-              if (event.data is String) {
-                final raw = event.data as String;
-                data = raw.isEmpty
-                    ? {}
-                    : (jsonDecode(raw) as Map<String, dynamic>? ?? {});
-              } else if (event.data is Map<String, dynamic>) {
-                data = event.data as Map<String, dynamic>;
-              } else {
-                data = {};
-              }
+              final data = _parseEventData(event.data);
               handler(data);
             }
           } catch (e) {
@@ -144,12 +151,31 @@ class WebSocketService {
     }
   }
 
+  // CORRECTION: Parse robuste des données d'événement
+  Map<String, dynamic> _parseEventData(dynamic rawData) {
+    if (rawData is Map<String, dynamic>) return rawData;
+    if (rawData is Map) return Map<String, dynamic>.from(rawData);
+    if (rawData is String) {
+      if (rawData.isEmpty) return {};
+      try {
+        final decoded = jsonDecode(rawData);
+        if (decoded is Map<String, dynamic>) return decoded;
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+    }
+    return {};
+  }
+
   Future<void> unsubscribeFromConversation(int conversationId) async {
-    await _unsubscribe('presence-conversation.$conversationId');
+    final channelName = 'presence-conversation.$conversationId';
+    _pendingSubscriptions.remove(channelName);
+    await _unsubscribe(channelName);
   }
 
   Future<void> unsubscribeFromUserChannel(int userId) async {
-    await _unsubscribe('presence-user.$userId');
+    final channelName = 'presence-user.$userId';
+    _pendingSubscriptions.remove(channelName);
+    await _unsubscribe(channelName);
   }
 
   Future<void> _unsubscribe(String channelName) async {
@@ -164,6 +190,7 @@ class WebSocketService {
   }
 
   Future<void> disconnect() async {
+    _pendingSubscriptions.clear();
     try {
       for (final name in _channels.keys.toList()) {
         try {
@@ -176,6 +203,7 @@ class WebSocketService {
       debugPrint('[WS] Disconnect error: $e');
     } finally {
       _initialized = false;
+      _connecting = false;
       debugPrint('[WS] Déconnecté');
     }
   }

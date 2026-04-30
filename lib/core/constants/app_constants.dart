@@ -1,8 +1,7 @@
 class AppConstants {
   AppConstants._();
 
-  // ── IP du serveur (à changer si le serveur change d'IP) ────────────────────
-  static const String _serverIp = '192.168.10.126';
+  static const String _serverIp = '192.168.100.201';
 
   static const String baseUrl        = 'http://$_serverIp:8000/api';
   static const String storageBaseUrl = 'http://$_serverIp:8000';
