@@ -1,14 +1,134 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../core/services/call_service.dart';
+import '../../../../core/services/notification_service.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../shared/models/models.dart';
+import '../../../../shared/models/user_model.dart';
 import '../../../auth/data/auth_provider.dart';
+import '../../../conversations/data/conversations_provider.dart';
 import '../../../notifications/data/notifications_provider.dart';
 
-class HomePage extends ConsumerWidget {
+class HomePage extends ConsumerStatefulWidget {
   final Widget child;
-
   const HomePage({super.key, required this.child});
+
+  @override
+  ConsumerState<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends ConsumerState<HomePage> {
+  final CallService _callService = CallService();
+  IncomingCallInfo? _globalIncomingCall;
+  bool _callbacksSetup = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _setupGlobalCallListener();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Écouter les conversations dès qu'elles sont chargées
+    _listenToAllConversations();
+  }
+
+  void _setupGlobalCallListener() {
+    if (_callbacksSetup) return;
+    _callbacksSetup = true;
+
+    final user = ref.read(currentUserProvider);
+    if (user != null) {
+      _callService.setCurrentUser(user.id);
+    }
+
+    // Quand un appel entrant arrive globalement
+    _callService.onIncomingCall = (IncomingCallInfo info) {
+      if (!mounted) return;
+      setState(() => _globalIncomingCall = info);
+    };
+
+    // Quand l'appel est terminé/rejeté
+    _callService.onCallStatusChanged = (String status) {
+      if (!mounted) return;
+      if (status == 'ended' || status == 'rejected') {
+        _callService.stopIncomingRingtone();
+        setState(() => _globalIncomingCall = null);
+        //if (!kIsWeb) {
+        //  NotificationService().cancelAll();
+        //}
+      }
+    };
+  }
+
+  void _listenToAllConversations() {
+    final conversationsAsync = ref.read(conversationsProvider);
+    conversationsAsync.whenData((conversations) {
+      for (final conv in conversations) {
+        _callService.listenGloballyToConversation(conv.id);
+      }
+    });
+  }
+
+  Future<void> _acceptGlobalCall(IncomingCallInfo info) async {
+    setState(() => _globalIncomingCall = null);
+    _callService.stopIncomingRingtone();
+    //if (!kIsWeb) NotificationService().cancelCallNotification(info.callId);
+
+    final currentUser = ref.read(currentUserProvider);
+    final success = await _callService.answerCall(
+      info.callId,
+      info.conversationId,
+      currentUser?.id ?? 0,
+    );
+
+    if (success && mounted) {
+      // Récupérer les participants de la conversation
+      final conversationsAsync = ref.read(conversationsProvider);
+      List<UserModel> participants = [];
+      conversationsAsync.whenData((conversations) {
+        final conv = conversations.where((c) => c.id == info.conversationId).firstOrNull;
+        participants = conv?.participants ?? [];
+      });
+
+      final callerData = info.raw['caller'];
+      UserModel? caller;
+      if (callerData is Map) {
+        try {
+          caller = UserModel.fromJson(Map<String, dynamic>.from(callerData));
+        } catch (_) {}
+      }
+
+      final call = CallModel(
+        id: info.callId,
+        conversationId: info.conversationId,
+        callerId: info.callerId,
+        caller: caller,
+        type: info.callType,
+        status: 'active',
+        startedAt: DateTime.now(),
+        createdAt: DateTime.now(),
+      );
+
+      context.push(
+        '/calls/${info.callId}',
+        extra: {
+          'call': call,
+          'participants': participants,
+        },
+      );
+    }
+  }
+
+  Future<void> _rejectGlobalCall(IncomingCallInfo info) async {
+    setState(() => _globalIncomingCall = null);
+    _callService.stopIncomingRingtone();
+    //if (!kIsWeb) NotificationService().cancelCallNotification(info.callId);
+    await _callService.rejectCall(info.callId);
+  }
 
   int _locationToIndex(String location) {
     if (location.startsWith('/groups')) return 1;
@@ -34,30 +154,233 @@ class HomePage extends ConsumerWidget {
     }
   }
 
+  // Écouter les nouvelles conversations chargées pour les abonner
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
     final isAdmin = user?.isAdmin ?? false;
     final location = GoRouterState.of(context).matchedLocation;
     final currentIndex = _locationToIndex(location);
     final isWide = MediaQuery.of(context).size.width > 768;
 
+    // Écouter les conversations dès qu'elles changent
+    ref.listen(conversationsProvider, (_, next) {
+      next.whenData((conversations) {
+        for (final conv in conversations) {
+          _callService.listenGloballyToConversation(conv.id);
+        }
+      });
+    });
+
+    Widget layout;
     if (isWide) {
-      return _WebLayout(
-        child: child,
+      layout = _WebLayout(
+        child: widget.child,
         currentIndex: currentIndex,
         isAdmin: isAdmin,
         user: user,
         onNavTap: (i) => _onNavTap(context, i, isAdmin),
         onLogout: () => ref.read(authProvider.notifier).logout(),
       );
+    } else {
+      layout = _MobileLayout(
+        child: widget.child,
+        currentIndex: currentIndex,
+        isAdmin: isAdmin,
+        onNavTap: (i) => _onNavTap(context, i, isAdmin),
+      );
     }
 
-    return _MobileLayout(
-      child: child,
-      currentIndex: currentIndex,
-      isAdmin: isAdmin,
-      onNavTap: (i) => _onNavTap(context, i, isAdmin),
+    // Bannière d'appel entrant global — visible depuis n'importe quelle page
+    return Stack(
+      children: [
+        layout,
+        if (_globalIncomingCall != null)
+          _GlobalIncomingCallBanner(
+            info: _globalIncomingCall!,
+            onAccept: () => _acceptGlobalCall(_globalIncomingCall!),
+            onReject: () => _rejectGlobalCall(_globalIncomingCall!),
+          ),
+      ],
+    );
+  }
+}
+
+// ─── Bannière appel entrant GLOBALE ──────────────────────────
+class _GlobalIncomingCallBanner extends StatefulWidget {
+  final IncomingCallInfo info;
+  final VoidCallback onAccept;
+  final VoidCallback onReject;
+
+  const _GlobalIncomingCallBanner({
+    required this.info,
+    required this.onAccept,
+    required this.onReject,
+  });
+
+  @override
+  State<_GlobalIncomingCallBanner> createState() =>
+      _GlobalIncomingCallBannerState();
+}
+
+class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 350));
+    _slide = Tween<Offset>(begin: const Offset(0, -1), end: Offset.zero)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SlideTransition(
+        position: _slide,
+        child: Material(
+          elevation: 12,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [AppColors.primaryDark, AppColors.primary],
+              ),
+            ),
+            child: SafeArea(
+              bottom: false,
+              child: Row(children: [
+                // Icône pulsante
+                _PulsingIcon(
+                  icon: widget.info.callType == 'video'
+                      ? Icons.videocam_rounded
+                      : Icons.call_rounded,
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.info.callerName,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontFamily: 'Nunito',
+                            fontSize: 16),
+                      ),
+                      Text(
+                        widget.info.callType == 'video'
+                            ? '📹 Appel vidéo entrant...'
+                            : '📞 Appel audio entrant...',
+                        style: TextStyle(
+                            color: Colors.white.withOpacity(0.85),
+                            fontSize: 13,
+                            fontFamily: 'Nunito'),
+                      ),
+                    ],
+                  ),
+                ),
+                // Bouton refuser
+                GestureDetector(
+                  onTap: widget.onReject,
+                  child: Container(
+                    width: 48,
+                    height: 48,
+                    margin: const EdgeInsets.only(right: 10),
+                    decoration: const BoxDecoration(
+                      color: AppColors.error,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.call_end_rounded,
+                        color: Colors.white, size: 22),
+                  ),
+                ),
+                // Bouton accepter
+                GestureDetector(
+                  onTap: widget.onAccept,
+                  child: Container(
+                    width: 48,
+                    height: 48,
+                    decoration: const BoxDecoration(
+                      color: AppColors.success,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      widget.info.callType == 'video'
+                          ? Icons.videocam_rounded
+                          : Icons.call_rounded,
+                      color: Colors.white,
+                      size: 22,
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PulsingIcon extends StatefulWidget {
+  final IconData icon;
+  const _PulsingIcon({required this.icon});
+
+  @override
+  State<_PulsingIcon> createState() => _PulsingIconState();
+}
+
+class _PulsingIconState extends State<_PulsingIcon>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 800))
+      ..repeat(reverse: true);
+    _scale = Tween<double>(begin: 0.9, end: 1.1)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScaleTransition(
+      scale: _scale,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.2),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white.withOpacity(0.4), width: 2),
+        ),
+        child: Icon(widget.icon, color: Colors.white, size: 24),
+      ),
     );
   }
 }
@@ -172,20 +495,15 @@ class _WebLayout extends ConsumerWidget {
                   width: 260,
                   decoration: const BoxDecoration(
                     color: AppColors.white,
-                    border: Border(
-                      right: BorderSide(color: AppColors.grey200),
-                    ),
+                    border: Border(right: BorderSide(color: AppColors.grey200)),
                   ),
                   child: Column(
                     children: [
-                      // Header logo
                       Container(
                         height: 64,
                         padding: const EdgeInsets.symmetric(horizontal: 20),
                         decoration: const BoxDecoration(
-                          border: Border(
-                            bottom: BorderSide(color: AppColors.grey200),
-                          ),
+                          border: Border(bottom: BorderSide(color: AppColors.grey200)),
                         ),
                         child: Row(
                           children: [
@@ -238,8 +556,6 @@ class _WebLayout extends ConsumerWidget {
                           ],
                         ),
                       ),
-
-                      // Nav items
                       const SizedBox(height: 12),
                       Expanded(
                         child: ListView(
@@ -271,8 +587,7 @@ class _WebLayout extends ConsumerWidget {
                             if (isAdmin)
                               _SidebarItem(
                                 icon: Icons.admin_panel_settings_outlined,
-                                selectedIcon:
-                                    Icons.admin_panel_settings_rounded,
+                                selectedIcon: Icons.admin_panel_settings_rounded,
                                 label: 'Administration',
                                 selected: currentIndex == 3,
                                 onTap: () => onNavTap(3),
@@ -280,21 +595,17 @@ class _WebLayout extends ConsumerWidget {
                           ],
                         ),
                       ),
-
-                      // User footer
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: const BoxDecoration(
-                          border: Border(
-                            top: BorderSide(color: AppColors.grey200),
-                          ),
+                          border: Border(top: BorderSide(color: AppColors.grey200)),
                         ),
                         child: Row(
                           children: [
                             Container(
                               width: 36,
                               height: 36,
-                              decoration: BoxDecoration(
+                              decoration: const BoxDecoration(
                                 color: AppColors.primary,
                                 shape: BoxShape.circle,
                               ),
@@ -349,14 +660,10 @@ class _WebLayout extends ConsumerWidget {
                     ],
                   ),
                 ),
-
-                // ─── Main content ─────────────────────────────
                 Expanded(child: child),
               ],
             ),
           ),
-
-          // ─── Footer Web ───────────────────────────────────
           _WebFooter(),
         ],
       ),
@@ -406,8 +713,7 @@ class _SidebarItem extends StatelessWidget {
                     label,
                     style: TextStyle(
                       fontSize: 14,
-                      fontWeight:
-                          selected ? FontWeight.w700 : FontWeight.w500,
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                       color: selected ? AppColors.primary : AppColors.grey600,
                       fontFamily: 'Nunito',
                     ),
@@ -415,8 +721,8 @@ class _SidebarItem extends StatelessWidget {
                 ),
                 if (badge != null)
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppColors.primary,
                       borderRadius: BorderRadius.circular(10),
@@ -440,7 +746,6 @@ class _SidebarItem extends StatelessWidget {
   }
 }
 
-// ─── Footer Web ───────────────────────────────────────────────
 class _WebFooter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -462,14 +767,11 @@ class _WebFooter extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 16),
-          const Text(
-            '•',
-            style: TextStyle(color: AppColors.grey300),
-          ),
+          const Text('•', style: TextStyle(color: AppColors.grey300)),
           const SizedBox(width: 16),
-          Text(
+          const Text(
             'Version 1.0.0',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               color: AppColors.grey400,
               fontFamily: 'Nunito',
