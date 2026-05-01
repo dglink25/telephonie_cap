@@ -42,6 +42,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Timer? _typingTimer;
   bool _isSendingFile = false;
 
+  // Getter pour savoir si c'est un groupe
+  bool get isGroup => _conversation?.isGroup ?? false;
+
   @override
   void initState() {
     super.initState();
@@ -124,7 +127,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         }
       },
 
-      // BUG FIX: event name matches broadcastAs() = 'call.initiated'
       'call.initiated': (data) {
         if (!mounted) return;
         final callerId = data['caller_id'] as int?;
@@ -134,7 +136,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         context.push('/calls/${call.id}', extra: call);
       },
 
-      // BUG FIX: event name matches broadcastAs() = 'call.status'
       'call.status': (data) {
         _callService.onCallStatusChanged?.call(data['status'] as String? ?? '');
       },
@@ -142,7 +143,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       'call.signal': (data) {
         final senderId = data['sender_id'] as int?;
         if (senderId != currentUser?.id) {
-          // Route signal to call service
           _callService.onCallSignalReceived(data);
         }
       },
@@ -387,6 +387,34 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
   }
 
+  // Méthode pour l'appel vidéo avec confirmation
+  Future<void> _initiateVideoCallWithConfirm() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Appel vidéo'),
+        content: const Text('Voulez-vous démarrer un appel vidéo ?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Annuler'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+            ),
+            child: const Text('Appeler'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _initiateCall('video');
+    }
+  }
+
   void _showError(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -398,6 +426,17 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
+  }
+
+  // Nouvelle méthode pour démarrer une conversation privée depuis un groupe
+  Future<void> _startPrivateFromGroup(UserModel sender) async {
+    final conv = await ref
+        .read(conversationsProvider.notifier)
+        .startDirect(sender.id);
+
+    if (conv != null && mounted) {
+      context.push('/conversations/${conv.id}');
+    }
   }
 
   @override
@@ -562,19 +601,41 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ],
       ),
       actions: [
-        IconButton(
-          icon: const Icon(Icons.call_outlined),
-          color: AppColors.grey700,
-          onPressed: () => _initiateCall('audio'),
-          tooltip: 'Appel audio',
-        ),
-        if (conv?.isGroup != true)
+        // ── Bouton paramètres si groupe ──────────────────────
+        if (isGroup && conv != null)
           IconButton(
-            icon: const Icon(Icons.videocam_outlined),
-            color: AppColors.grey700,
-            onPressed: () => _initiateCall('video'),
-            tooltip: 'Appel vidéo',
+            icon: const Icon(Icons.settings_rounded),
+            color: AppColors.primary,
+            tooltip: 'Paramètres du groupe',
+            onPressed: () {
+              final groupId = conv.group?.id ?? conv.groupId;
+              if (groupId != null) {
+                context.push('/groups/$groupId/settings');
+              }
+            },
           ),
+        // ── Appels (seulement en conversation directe) ───────
+        if (!isGroup)
+          Tooltip(
+            message: 'Appel audio',
+            child: IconButton(
+              icon: const Icon(Icons.call_rounded),
+              color: AppColors.primary,
+              iconSize: 24,
+              onPressed: () => _initiateCall('audio'),
+            ),
+          ),
+        if (!isGroup)
+          Tooltip(
+            message: 'Appel vidéo',
+            child: IconButton(
+              icon: const Icon(Icons.videocam_rounded),
+              color: AppColors.primary,
+              iconSize: 26,
+              onPressed: _initiateVideoCallWithConfirm,
+            ),
+          ),
+        const SizedBox(width: 4),
       ],
     );
   }
@@ -624,6 +685,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               ? () => ref
                     .read(messagesProvider(widget.conversationId).notifier)
                     .deleteMessage(msg.id)
+              : null,
+          onNameTap: !isMine && msg.sender != null
+              ? () => _startPrivateFromGroup(msg.sender!)
               : null,
         );
       },
@@ -920,12 +984,14 @@ class _MessageBubble extends StatelessWidget {
   final bool isMine;
   final bool showAvatar;
   final VoidCallback? onDelete;
+  final VoidCallback? onNameTap;
 
   const _MessageBubble({
     required this.message,
     required this.isMine,
     required this.showAvatar,
     this.onDelete,
+    this.onNameTap,
   });
 
   @override
@@ -977,13 +1043,17 @@ class _MessageBubble extends StatelessWidget {
                   if (!isMine && showAvatar)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4),
-                      child: Text(
-                        message.sender?.fullName ?? '',
-                        style: const TextStyle(
-                          color: AppColors.primary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          fontFamily: 'Nunito',
+                      child: GestureDetector(
+                        onTap: onNameTap,
+                        child: Text(
+                          message.sender?.fullName ?? '',
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            fontFamily: 'Nunito',
+                            decoration: TextDecoration.underline,
+                          ),
                         ),
                       ),
                     ),
@@ -1026,7 +1096,6 @@ class _MessageBubble extends StatelessWidget {
   }
 
   Widget _buildContent(BuildContext context) {
-    // BUG FIX: Proper URL building for media
     final mediaUrl = message.mediaUrl != null
         ? (message.mediaUrl!.startsWith('http')
             ? message.mediaUrl!

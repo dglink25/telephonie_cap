@@ -12,6 +12,7 @@ import '../../features/notifications/presentation/pages/notifications_page.dart'
 import '../../features/admin/presentation/pages/admin_page.dart';
 import '../../features/calls/presentation/pages/call_page.dart';
 import '../../shared/models/models.dart';
+import '../../features/groups/presentation/pages/group_settings_page.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authProvider);
@@ -95,6 +96,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           return CallPage(call: call);
         },
       ),
+
+      GoRoute(
+  path: '/groups/:id/settings',
+  name: 'group-settings',
+  builder: (context, state) => GroupSettingsPage(
+    groupId: int.parse(state.pathParameters['id']!),
+  ),
+),
+
     ],
 
     errorBuilder: (context, state) => Scaffold(

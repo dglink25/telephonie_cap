@@ -1,7 +1,32 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/api_client.dart';
 import '../../../shared/models/models.dart';
+import '../../../shared/models/user_model.dart';
 
+// ─── Provider tous les utilisateurs actifs ────────────────────
+final allUsersProvider = FutureProvider<List<UserModel>>((ref) async {
+  final response = await ApiClient().dio.get('/users');
+  final data = response.data;
+  List<dynamic> list;
+  if (data is Map && data.containsKey('data')) {
+    list = data['data'] as List<dynamic>;
+  } else if (data is List) {
+    list = data;
+  } else {
+    list = [];
+  }
+  return list
+      .map((e) => UserModel.fromJson(e as Map<String, dynamic>))
+      .toList();
+});
+
+// ─── Filtre actif ─────────────────────────────────────────────
+enum ConversationFilter { all, unread, groups, favorites }
+
+final conversationFilterProvider =
+    StateProvider<ConversationFilter>((ref) => ConversationFilter.all);
+
+// ─── Notifier ─────────────────────────────────────────────────
 class ConversationsNotifier
     extends StateNotifier<AsyncValue<List<ConversationModel>>> {
   final ApiClient _api = ApiClient();
@@ -16,7 +41,6 @@ class ConversationsNotifier
       final response = await _api.getConversations();
       final data = response.data;
       List<dynamic> list;
-      // BUG FIX: API may return paginated or plain list
       if (data is Map && data.containsKey('data')) {
         list = data['data'] as List<dynamic>;
       } else if (data is List) {
@@ -33,12 +57,11 @@ class ConversationsNotifier
     }
   }
 
-  // BUG FIX: Matches fixed ApiClient.startDirectConversation(int userId)
   Future<ConversationModel?> startDirect(int userId) async {
     try {
       final response = await _api.startDirectConversation(userId);
-      final conv = ConversationModel.fromJson(
-          response.data as Map<String, dynamic>);
+      final conv =
+          ConversationModel.fromJson(response.data as Map<String, dynamic>);
       await load();
       return conv;
     } catch (_) {
@@ -57,6 +80,22 @@ class ConversationsNotifier
       state = AsyncData(updated);
     });
   }
+
+  Future<void> toggleFavorite(int conversationId) async {
+  try {
+    await ApiClient().dio.post('/conversations/$conversationId/favorite');
+    state.whenData((convs) {
+      final updated = convs.map((c) {
+        if (c.id == conversationId) {
+          return c.copyWith(isFavorite: !(c.isFavorite ?? false));
+        }
+        return c;
+      }).toList();
+      // Cast explicite pour éviter l'erreur de type
+      state = AsyncData(List<ConversationModel>.from(updated));
+    });
+  } catch (_) {}
+}
 
   void addOrUpdateConversation(ConversationModel conv) {
     state.whenData((convs) {
