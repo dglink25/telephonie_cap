@@ -1,4 +1,3 @@
-// lib/shared/models/user_model.dart
 class UserModel {
   final int id;
   final String fullName;
@@ -6,6 +5,7 @@ class UserModel {
   final String? phoneNumber;
   final String? status;
   final bool isAdmin;
+  final String? groupRole; // ← ajouté : 'admin' | 'member' | null
 
   const UserModel({
     required this.id,
@@ -14,6 +14,7 @@ class UserModel {
     this.phoneNumber,
     this.status,
     this.isAdmin = false,
+    this.groupRole, // ← ajouté
   });
 
   factory UserModel.fromJson(Map<String, dynamic> json) => UserModel(
@@ -23,6 +24,11 @@ class UserModel {
         phoneNumber: json['phone_number'] as String?,
         status: json['status'] as String?,
         isAdmin: json['is_admin'] as bool? ?? false,
+        // Lire le rôle depuis le pivot group_members si présent
+        groupRole: (() {
+          final pivot = json['pivot'] as Map<String, dynamic>?;
+          return pivot?['role'] as String?;
+        })(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -34,10 +40,11 @@ class UserModel {
         'is_admin': isAdmin,
       };
 
-  // BUG FIX: Added missing initials getter used in home_page.dart
   String get initials {
     final parts = fullName.trim().split(' ');
-    if (parts.length >= 2 && parts[0].isNotEmpty && parts[1].isNotEmpty) {
+    if (parts.length >= 2 &&
+        parts[0].isNotEmpty &&
+        parts[1].isNotEmpty) {
       return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
     }
     if (parts.isNotEmpty && parts[0].isNotEmpty) {
@@ -53,6 +60,7 @@ class UserModel {
     String? phoneNumber,
     String? status,
     bool? isAdmin,
+    String? groupRole,
   }) =>
       UserModel(
         id: id ?? this.id,
@@ -61,5 +69,6 @@ class UserModel {
         phoneNumber: phoneNumber ?? this.phoneNumber,
         status: status ?? this.status,
         isAdmin: isAdmin ?? this.isAdmin,
+        groupRole: groupRole ?? this.groupRole,
       );
 }

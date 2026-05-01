@@ -202,20 +202,17 @@ class _CallPageState extends ConsumerState<CallPage>
 
   int? get _currentUserId => ref.read(authProvider).user?.id;
 
-  /// CORRECTIF PRINCIPAL : afficher l'interlocuteur, pas forcément l'appelant.
-  ///
-  /// - Si je suis l'appelant → afficher le destinataire (autre participant)
-  /// - Si je suis le destinataire → afficher l'appelant (caller)
   String get _remotePartyName {
     final myId = _currentUserId;
     final iAmCaller = _call.callerId == myId;
 
     if (iAmCaller) {
-      // Je suis l'appelant → montrer le destinataire depuis les participants
+
       final other = widget.participants.where((p) => p.id != myId).firstOrNull;
       return other?.fullName ?? 'Appel en cours...';
-    } else {
-      // Je reçois l'appel → montrer l'appelant
+    } 
+    else {
+      
       return _call.caller?.fullName ?? 'Appel entrant';
     }
   }

@@ -47,12 +47,56 @@ class GroupModel {
             : null,
       );
 
+  // ── Méthodes utilitaires ──────────────────────────────────
+
+  /// Vérifie si un utilisateur est admin du groupe.
+  /// On compare avec le pivot 'role' si disponible,
+  /// sinon on compare avec createdBy comme fallback.
+  bool isAdmin(int userId) {
+    // Le créateur est toujours admin
+    if (userId == createdBy) return true;
+    // Chercher dans les membres si le pivot role = admin
+    try {
+      final member = members.firstWhere((m) => m.id == userId);
+      return member.groupRole == 'admin';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool isMember(int userId) {
+    return members.any((m) => m.id == userId);
+  }
+
   String get initials {
     final words = name.trim().split(' ');
     if (words.isEmpty) return 'G';
     if (words.length == 1) return words[0][0].toUpperCase();
     return '${words[0][0]}${words[1][0]}'.toUpperCase();
   }
+
+  GroupModel copyWith({
+    int? id,
+    String? name,
+    String? description,
+    String? avatar,
+    int? createdBy,
+    UserModel? creator,
+    bool? isDefault,
+    List<UserModel>? members,
+    ConversationModel? conversation,
+  }) =>
+      GroupModel(
+        id: id ?? this.id,
+        name: name ?? this.name,
+        description: description ?? this.description,
+        avatar: avatar ?? this.avatar,
+        createdBy: createdBy ?? this.createdBy,
+        creator: creator ?? this.creator,
+        isDefault: isDefault ?? this.isDefault,
+        members: members ?? this.members,
+        conversation: conversation ?? this.conversation,
+      );
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -64,7 +108,7 @@ class MessageModel {
   final int senderId;
   final UserModel? sender;
   final String? body;
-  final String type; // text | image | file | audio | video
+  final String type;
   final String? mediaUrl;
   final String? mediaName;
   final int? mediaSize;
@@ -128,13 +172,14 @@ class MessageModel {
 // ──────────────────────────────────────────────────────────────
 class ConversationModel {
   final int id;
-  final String type; // direct | group
+  final String type;
   final int? groupId;
   final GroupModel? group;
   final List<UserModel> participants;
   final MessageModel? lastMessage;
   final DateTime? lastMessageAt;
   final DateTime? lastReadAt;
+  final bool? isFavorite; // ← ajouté
 
   const ConversationModel({
     required this.id,
@@ -145,6 +190,7 @@ class ConversationModel {
     this.lastMessage,
     this.lastMessageAt,
     this.lastReadAt,
+    this.isFavorite, // ← ajouté
   });
 
   factory ConversationModel.fromJson(Map<String, dynamic> json) =>
@@ -169,6 +215,15 @@ class ConversationModel {
           final pivot = json['pivot'] as Map<String, dynamic>?;
           final raw = pivot?['last_read_at'] as String?;
           return raw != null ? DateTime.tryParse(raw) : null;
+        })(),
+        // Lire is_favorite depuis le pivot
+        isFavorite: (() {
+          final pivot = json['pivot'] as Map<String, dynamic>?;
+          final val = pivot?['is_favorite'];
+          if (val == null) return false;
+          if (val is bool) return val;
+          if (val is int) return val == 1;
+          return false;
         })(),
       );
 
@@ -204,6 +259,7 @@ class ConversationModel {
     MessageModel? lastMessage,
     DateTime? lastMessageAt,
     DateTime? lastReadAt,
+    bool? isFavorite, // ← ajouté
   }) =>
       ConversationModel(
         id: id ?? this.id,
@@ -214,6 +270,7 @@ class ConversationModel {
         lastMessage: lastMessage ?? this.lastMessage,
         lastMessageAt: lastMessageAt ?? this.lastMessageAt,
         lastReadAt: lastReadAt ?? this.lastReadAt,
+        isFavorite: isFavorite ?? this.isFavorite, // ← ajouté
       );
 }
 
@@ -225,11 +282,11 @@ class CallModel {
   final int conversationId;
   final int callerId;
   final UserModel? caller;
-  final String type;   // audio | video
-  final String status; // pending | active | ended | rejected | missed
+  final String type;
+  final String status;
   final DateTime? startedAt;
   final DateTime? endedAt;
-  final int? duration; // secondes
+  final int? duration;
   final DateTime createdAt;
 
   const CallModel({
@@ -271,7 +328,6 @@ class CallModel {
   bool get isAudio => type == 'audio';
   bool get isVideo => type == 'video';
 
-  /// Copie immuable avec surcharge de champs.
   CallModel copyWith({
     int? id,
     int? conversationId,
@@ -335,13 +391,16 @@ class NotificationModel {
       );
 
   bool get isRead => readAt != null;
-  String get title => data['title'] as String? ??
+  String get title =>
+      data['title'] as String? ??
       data['sender_name'] as String? ??
       'Notification';
   String get body => data['body'] as String? ?? '';
 }
 
-
+// ──────────────────────────────────────────────────────────────
+// Invitation
+// ──────────────────────────────────────────────────────────────
 class InvitationModel {
   final int id;
   final String email;
@@ -378,7 +437,9 @@ class InvitationModel {
   bool get isValid => !isUsed && !isExpired;
 }
 
-
+// ──────────────────────────────────────────────────────────────
+// PaginatedResponse
+// ──────────────────────────────────────────────────────────────
 class PaginatedResponse<T> {
   final List<T> data;
   final int currentPage;

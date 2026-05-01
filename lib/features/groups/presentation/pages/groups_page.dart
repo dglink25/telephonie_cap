@@ -259,7 +259,19 @@ class _GroupCard extends StatelessWidget {
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right_rounded, color: AppColors.grey300),
+            // Modification ici : bouton paramètres + chevron
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.settings_rounded,
+                      color: AppColors.grey400, size: 20),
+                  tooltip: 'Paramètres',
+                  onPressed: () => context.push('/groups/${group.id}/settings'),
+                ),
+                const Icon(Icons.chevron_right_rounded, color: AppColors.grey300),
+              ],
+            ),
           ],
         ),
       ),
