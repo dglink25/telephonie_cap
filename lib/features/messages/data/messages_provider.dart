@@ -82,12 +82,29 @@ class MessagesNotifier
     }
   }
 
-  /// Send file from disk path — returns false and logs full error on failure
-  Future<bool> sendFile(String filePath, String messageType) async {
+  /// Limite par type de fichier
+  static int _maxBytesForType(String messageType) {
+    switch (messageType) {
+      case 'video':
+        return 25 * 1024 * 1024; // 25 MB pour vidéo
+      case 'image':
+        return 10 * 1024 * 1024; // 10 MB pour image
+      case 'audio':
+        return 16 * 1024 * 1024; // 16 MB pour audio
+      default:
+        return 50 * 1024 * 1024; // 50 MB pour docs
+    }
+  }
+
+  /// Send file from disk path
+  Future<bool> sendFile(
+    String filePath,
+    String messageType, {
+    void Function(int sent, int total)? onProgress,
+  }) async {
     try {
       final file = File(filePath);
 
-      // Validate file exists and is readable
       if (!await file.exists()) {
         debugPrint('[Messages] sendFile: file does not exist at $filePath');
         return false;
@@ -99,10 +116,12 @@ class MessagesNotifier
         return false;
       }
 
-      // Max 50MB check
-      const maxBytes = 50 * 1024 * 1024;
+      final maxBytes = _maxBytesForType(messageType);
       if (fileSize > maxBytes) {
-        debugPrint('[Messages] sendFile: file too large (${fileSize}B)');
+        final maxMb = maxBytes ~/ (1024 * 1024);
+        debugPrint(
+            '[Messages] sendFile: file too large (${fileSize}B > ${maxBytes}B)');
+        debugPrint('[Messages] Limite: $maxMb MB pour le type $messageType');
         return false;
       }
 
@@ -111,7 +130,7 @@ class MessagesNotifier
           lookupMimeType(filePath) ?? _fallbackMime(messageType);
 
       debugPrint(
-          '[Messages] Sending file: $fileName ($mimeType, ${fileSize}B)');
+          '[Messages] Sending file: $fileName ($mimeType, ${(fileSize / 1024 / 1024).toStringAsFixed(2)} MB)');
 
       final multipartFile = await MultipartFile.fromFile(
         filePath,
@@ -123,6 +142,7 @@ class MessagesNotifier
         conversationId,
         type: messageType,
         file: multipartFile,
+        onSendProgress: onProgress,
       );
 
       if (response.statusCode != null &&
@@ -152,29 +172,30 @@ class MessagesNotifier
     }
   }
 
-  /// Send file from bytes (web or in-memory) — returns false with error on failure
+  /// Send file from bytes (web or in-memory)
   Future<bool> sendFileBytes(
     Uint8List bytes,
     String fileName,
     String messageType,
-    String mimeType,
-  ) async {
+    String mimeType, {
+    void Function(int sent, int total)? onProgress,
+  }) async {
     try {
       if (bytes.isEmpty) {
         debugPrint('[Messages] sendFileBytes: bytes are empty');
         return false;
       }
 
-      // Max 50MB
-      const maxBytes = 50 * 1024 * 1024;
+      final maxBytes = _maxBytesForType(messageType);
       if (bytes.length > maxBytes) {
+        final maxMb = maxBytes ~/ (1024 * 1024);
         debugPrint(
-            '[Messages] sendFileBytes: too large (${bytes.length}B)');
+            '[Messages] sendFileBytes: too large (${bytes.length}B). Limite: $maxMb MB pour $messageType');
         return false;
       }
 
       debugPrint(
-          '[Messages] Sending bytes: $fileName ($mimeType, ${bytes.length}B)');
+          '[Messages] Sending bytes: $fileName ($mimeType, ${(bytes.length / 1024 / 1024).toStringAsFixed(2)} MB)');
 
       final multipartFile = MultipartFile.fromBytes(
         bytes,
@@ -186,6 +207,7 @@ class MessagesNotifier
         conversationId,
         type: messageType,
         file: multipartFile,
+        onSendProgress: onProgress,
       );
 
       if (response.statusCode != null &&

@@ -48,11 +48,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
   ConversationModel? _conversation;
   Timer? _typingTimer;
 
-  // File sending state
   bool _isSendingFile = false;
   String? _sendingFileError;
 
-  // Voice recording state
   bool _isRecording = false;
   bool _isLongPressing = false;
   Duration _recordingDuration = Duration.zero;
@@ -60,7 +58,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
   String? _currentRecordPath;
   late AnimationController _recordingPulseController;
 
-  // Swipe to reveal attachment options
   bool _showAttachBar = false;
 
   bool get isGroup => _conversation?.isGroup ?? false;
@@ -108,10 +105,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
         });
       }
     }
-    setState(() {}); // rebuild send/mic button
+    setState(() {});
   }
 
-  // ── WebSocket ──────────────────────────────────────────────────
   void _subscribeToWebSocket() {
     final currentUser = ref.read(currentUserProvider);
 
@@ -226,9 +222,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     });
   }
 
-  // ── Voice Recording ───────────────────────────────────────────
   Future<void> _startRecording() async {
-    // Web: recording to stream only (no file path)
     if (kIsWeb) {
       _showError('Enregistrement vocal non disponible sur le web');
       return;
@@ -245,7 +239,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
       _currentRecordPath =
           '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
-      // record v6 API: start(RecordConfig(), path: '...')
       await _recorder.start(
         const RecordConfig(
           encoder: AudioEncoder.aacLc,
@@ -282,7 +275,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
     try {
       final path = await _recorder.stop();
       if (path == null || _recordingDuration.inSeconds < 1) {
-        // Too short, discard
         if (path != null) File(path).deleteSync();
         return;
       }
@@ -300,7 +292,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
         _scrollToBottom();
       }
 
-      // Clean up temp file
       try {
         File(path).deleteSync();
       } catch (_) {}
@@ -326,7 +317,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
     HapticFeedback.lightImpact();
   }
 
-  // ── File Picking ───────────────────────────────────────────────
   Future<void> _pickImage({ImageSource source = ImageSource.gallery}) async {
     try {
       if (kIsWeb) {
@@ -366,22 +356,41 @@ class _ChatPageState extends ConsumerState<ChatPage>
           type: FileType.video,
           withData: true,
         );
-        if (result?.files.first.bytes != null) {
-          await _sendFileBytes(
-            result!.files.first.bytes!,
-            result.files.first.name,
-            'video',
-            'video/mp4',
-          );
+        if (result == null) return;
+        final f = result.files.first;
+        if (f.bytes == null) return;
+
+        const maxBytes = 25 * 1024 * 1024;
+        if (f.bytes!.length > maxBytes) {
+          _showError('La vidéo dépasse 25 MB. Veuillez choisir une vidéo plus courte.');
+          return;
         }
+
+        final mime = _guessMime(f.name);
+        await _sendFileBytes(f.bytes!, f.name, 'video', mime);
         return;
       }
 
-      final picked =
-          await _imagePicker.pickVideo(source: ImageSource.gallery);
-      if (picked != null) {
-        await _sendFilePath(picked.path, 'video');
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.video,
+        withData: false,
+        withReadStream: false,
+      );
+
+      if (result == null || result.files.first.path == null) return;
+
+      final path = result.files.first.path!;
+      final file = File(path);
+      final fileSize = await file.length();
+
+      const maxBytes = 25 * 1024 * 1024;
+      if (fileSize > maxBytes) {
+        final sizeMb = (fileSize / 1024 / 1024).toStringAsFixed(1);
+        _showError('La vidéo fait $sizeMb MB. La limite est de 25 MB.');
+        return;
       }
+
+      await _sendFilePath(path, 'video');
     } catch (e) {
       _showError('Impossible de charger la vidéo: $e');
     }
@@ -419,7 +428,16 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
     final success = await ref
         .read(messagesProvider(widget.conversationId).notifier)
-        .sendFile(path, type);
+        .sendFile(
+          path,
+          type,
+          onProgress: (sent, total) {
+            if (total > 0) {
+              final pct = (sent / total * 100).toStringAsFixed(0);
+              debugPrint('[Upload] $pct% ($sent/$total)');
+            }
+          },
+        );
 
     setState(() => _isSendingFile = false);
 
@@ -489,7 +507,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
     return 'file';
   }
 
-  // ── Call ───────────────────────────────────────────────────────
   Future<void> _initiateCall(String type) async {
     final currentUser = ref.read(currentUserProvider);
     if (currentUser == null) return;
@@ -562,7 +579,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     final other = conv?.getOtherParticipant(currentUser?.id ?? 0);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFEBE5DC), // WhatsApp beige background
+      backgroundColor: const Color(0xFFEBE5DC),
       appBar: _buildAppBar(displayName, other, conv),
       body: Column(
         children: [
@@ -798,11 +815,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
           final msg = messages[index];
           final isMine = msg.senderId == currentUserId;
 
-          // Show date separator
           final showDateSep = index == 0 ||
               !_isSameDay(messages[index - 1].createdAt, msg.createdAt);
 
-          // Show avatar for group chats when sender changes
           final showAvatar = !isMine &&
               isGroup &&
               (index == 0 || messages[index - 1].senderId != msg.senderId);
@@ -935,7 +950,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
           : Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                // Attachment + emoji button in text field
                 Expanded(
                   child: Container(
                     decoration: BoxDecoration(
@@ -950,7 +964,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        // Emoji / attachment toggle
                         IconButton(
                           icon: const Icon(Icons.emoji_emotions_outlined,
                               color: Color(0xFF8696A0), size: 24),
@@ -981,7 +994,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
                             ),
                           ),
                         ),
-                        // Attach button
                         IconButton(
                           icon: const Icon(Icons.attach_file_rounded,
                               color: Color(0xFF8696A0), size: 24),
@@ -989,7 +1001,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
                           padding: const EdgeInsets.all(10),
                           constraints: const BoxConstraints(),
                         ),
-                        // Camera button (only when no text)
                         if (!hasText)
                           IconButton(
                             icon: const Icon(Icons.camera_alt_outlined,
@@ -1004,7 +1015,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
                   ),
                 ),
                 const SizedBox(width: 6),
-                // Send / Mic button
                 GestureDetector(
                   onTap: hasText ? _send : null,
                   onLongPressStart: hasText
@@ -1053,7 +1063,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
     return Row(
       children: [
-        // Cancel swipe hint
         GestureDetector(
           onTap: _cancelRecording,
           child: Container(
@@ -1417,7 +1426,6 @@ class _MessageBubble extends StatelessWidget {
     this.onNameTap,
   });
 
-  // Colors for group participant names
   static const List<Color> _nameColors = [
     Color(0xFF1B7F4A),
     Color(0xFF2196F3),
@@ -1432,139 +1440,145 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        bottom: 2,
-        left: isMine ? 60 : 2,
-        right: isMine ? 2 : 60,
-      ),
-      child: Row(
-        mainAxisAlignment:
-            isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          if (!isMine && isGroup) ...[
-            if (showAvatar)
-              Padding(
-                padding: const EdgeInsets.only(right: 6, bottom: 2),
-                child: AvatarWidget(
-                    name: message.sender?.fullName ?? '?', size: 28),
-              )
-            else
-              const SizedBox(width: 34),
-          ],
-          GestureDetector(
-            onLongPress: onDelete != null ? () => _showMenu(context) : null,
-            child: Container(
-              constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width * 0.75,
-              ),
-              decoration: BoxDecoration(
-                color: isMine
-                    ? const Color(0xFFDCF8C6) // WhatsApp green sent
-                    : Colors.white,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(12),
-                  topRight: const Radius.circular(12),
-                  bottomLeft: Radius.circular(isMine ? 12 : 2),
-                  bottomRight: Radius.circular(isMine ? 2 : 12),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 3,
-                    offset: const Offset(0, 1),
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(12),
-                  topRight: const Radius.circular(12),
-                  bottomLeft: Radius.circular(isMine ? 12 : 2),
-                  bottomRight: Radius.circular(isMine ? 2 : 12),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (!isMine && showName && message.sender != null)
-                      Padding(
-                        padding: const EdgeInsets.only(
-                            left: 10, right: 10, top: 6),
-                        child: GestureDetector(
-                          onTap: onNameTap,
-                          child: Text(
-                            message.sender!.fullName,
-                            style: TextStyle(
-                              color: _nameColor(message.senderId),
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              fontFamily: 'Nunito',
-                            ),
-                          ),
-                        ),
+    // FIX: Use LayoutBuilder for responsive bubble width
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxBubbleWidth = constraints.maxWidth * 0.78;
+
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: 2,
+            left: isMine ? 48 : 2,
+            right: isMine ? 2 : 48,
+          ),
+          child: Row(
+            mainAxisAlignment:
+                isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (!isMine && isGroup) ...[
+                if (showAvatar)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6, bottom: 2),
+                    child: AvatarWidget(
+                        name: message.sender?.fullName ?? '?', size: 28),
+                  )
+                else
+                  const SizedBox(width: 34),
+              ],
+              GestureDetector(
+                onLongPress: onDelete != null ? () => _showMenu(context) : null,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: isMine
+                          ? const Color(0xFFDCF8C6)
+                          : Colors.white,
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(12),
+                        topRight: const Radius.circular(12),
+                        bottomLeft: Radius.circular(isMine ? 12 : 2),
+                        bottomRight: Radius.circular(isMine ? 2 : 12),
                       ),
-                    Padding(
-                      padding: _contentPadding(),
-                      child: message.isDeleted
-                          ? Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.block_rounded,
-                                    size: 14,
-                                    color: isMine
-                                        ? const Color(0xFF667781)
-                                        : const Color(0xFF8696A0)),
-                                const SizedBox(width: 5),
-                                Text(
-                                  'Message supprimé',
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.08),
+                          blurRadius: 3,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(12),
+                        topRight: const Radius.circular(12),
+                        bottomLeft: Radius.circular(isMine ? 12 : 2),
+                        bottomRight: Radius.circular(isMine ? 2 : 12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (!isMine && showName && message.sender != null)
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                  left: 10, right: 10, top: 6),
+                              child: GestureDetector(
+                                onTap: onNameTap,
+                                child: Text(
+                                  message.sender!.fullName,
                                   style: TextStyle(
-                                    color: isMine
-                                        ? const Color(0xFF667781)
-                                        : const Color(0xFF8696A0),
-                                    fontSize: 14,
-                                    fontStyle: FontStyle.italic,
+                                    color: _nameColor(message.senderId),
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
                                     fontFamily: 'Nunito',
                                   ),
                                 ),
+                              ),
+                            ),
+                          Padding(
+                            padding: _contentPadding(),
+                            child: message.isDeleted
+                                ? Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.block_rounded,
+                                          size: 14,
+                                          color: isMine
+                                              ? const Color(0xFF667781)
+                                              : const Color(0xFF8696A0)),
+                                      const SizedBox(width: 5),
+                                      Text(
+                                        'Message supprimé',
+                                        style: TextStyle(
+                                          color: isMine
+                                              ? const Color(0xFF667781)
+                                              : const Color(0xFF8696A0),
+                                          fontSize: 14,
+                                          fontStyle: FontStyle.italic,
+                                          fontFamily: 'Nunito',
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : _buildContent(context, maxBubbleWidth),
+                          ),
+                          // FIX: Timestamp row — use Row with mainAxisSize.min, no Flexible spacer
+                          Padding(
+                            padding: const EdgeInsets.only(
+                                right: 8, left: 8, bottom: 5),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                Text(
+                                  _formatTime(message.createdAt),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: isMine
+                                        ? const Color(0xFF667781)
+                                        : const Color(0xFF8696A0),
+                                    fontFamily: 'Nunito',
+                                  ),
+                                ),
+                                if (isMine) ...[
+                                  const SizedBox(width: 3),
+                                  const Icon(Icons.done_all_rounded,
+                                      size: 14, color: Color(0xFF53BDEB)),
+                                ],
                               ],
-                            )
-                          : _buildContent(context),
-                    ),
-                    // Timestamp row
-                    Padding(
-                      padding: const EdgeInsets.only(
-                          right: 8, left: 8, bottom: 5),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          Flexible(child: const SizedBox()),
-                          Text(
-                            _formatTime(message.createdAt),
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: isMine
-                                  ? const Color(0xFF667781)
-                                  : const Color(0xFF8696A0),
-                              fontFamily: 'Nunito',
                             ),
                           ),
-                          if (isMine) ...[
-                            const SizedBox(width: 3),
-                            const Icon(Icons.done_all_rounded,
-                                size: 14, color: Color(0xFF53BDEB)),
-                          ],
                         ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1577,7 +1591,7 @@ class _MessageBubble extends StatelessWidget {
     return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
-  Widget _buildContent(BuildContext context) {
+  Widget _buildContent(BuildContext context, double maxBubbleWidth) {
     final rawUrl = message.mediaUrl;
     String? mediaUrl;
 
@@ -1585,20 +1599,27 @@ class _MessageBubble extends StatelessWidget {
       if (rawUrl.startsWith('http')) {
         mediaUrl = rawUrl;
       } else {
-        // Ensure proper URL construction
         final base = AppConstants.storageBaseUrl;
         mediaUrl =
             rawUrl.startsWith('/') ? '$base$rawUrl' : '$base/$rawUrl';
       }
     }
 
+    // FIX: On web, use the API proxy endpoint to bypass CORS on storage files.
+    // On native, fetch directly with auth token.
     if (message.isImage && mediaUrl != null) {
-      return _AuthNetworkImage(url: mediaUrl, width: 240);
+      final imageUrl = kIsWeb ? _buildProxyUrl(mediaUrl) : mediaUrl;
+      return _AuthNetworkImage(
+        url: imageUrl,
+        // Responsive width: fill bubble up to maxBubbleWidth minus padding
+        width: (maxBubbleWidth - 6).clamp(120.0, 280.0),
+      );
     }
 
     if (message.isAudio && mediaUrl != null) {
+      final audioUrl = kIsWeb ? _buildProxyUrl(mediaUrl) : mediaUrl;
       return _AudioBubble(
-        url: mediaUrl,
+        url: audioUrl,
         isMine: isMine,
         mediaName: message.mediaName,
         duration: message.mediaSize != null
@@ -1608,15 +1629,22 @@ class _MessageBubble extends StatelessWidget {
     }
 
     if (message.isVideo && mediaUrl != null) {
+      final videoUrl = kIsWeb ? _buildProxyUrl(mediaUrl) : mediaUrl;
+      // Responsive video thumbnail
+      final thumbWidth = (maxBubbleWidth - 6).clamp(160.0, 280.0);
+      final thumbHeight = thumbWidth * 0.6;
       return GestureDetector(
-        onTap: () => _openUrl(mediaUrl!),
+        onTap: () => _openUrl(videoUrl),
         child: Stack(
           alignment: Alignment.center,
           children: [
             Container(
-              width: 240,
-              height: 145,
-              color: Colors.black87,
+              width: thumbWidth,
+              height: thumbHeight,
+              decoration: BoxDecoration(
+                color: Colors.black87,
+                borderRadius: BorderRadius.circular(4),
+              ),
               child: const Center(
                 child:
                     Icon(Icons.videocam_rounded, color: Colors.white54, size: 52),
@@ -1650,13 +1678,14 @@ class _MessageBubble extends StatelessWidget {
     }
 
     if (message.isFile && mediaUrl != null) {
+      final fileUrl = kIsWeb ? _buildProxyUrl(mediaUrl) : mediaUrl;
       final sizeStr = message.mediaSize != null
           ? _formatFileSize(message.mediaSize!)
           : '';
       final ext = (message.mediaName ?? '').split('.').last.toUpperCase();
 
       return GestureDetector(
-        onTap: () => _openUrl(mediaUrl!),
+        onTap: () => _openUrl(fileUrl),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1685,6 +1714,7 @@ class _MessageBubble extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
+            // FIX: Use Flexible instead of Expanded inside Row with mainAxisSize.min
             Flexible(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1721,7 +1751,6 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
-    // Text
     if (message.body != null && message.body!.isNotEmpty) {
       return SelectableText(
         message.body!,
@@ -1735,6 +1764,23 @@ class _MessageBubble extends StatelessWidget {
     }
 
     return const SizedBox.shrink();
+  }
+
+  /// Build a proxy URL that routes through the Laravel API (which has CORS configured).
+  /// This avoids direct browser requests to storage/ which lack CORS headers.
+  String _buildProxyUrl(String originalUrl) {
+    // Extract the storage path from the full URL
+    // e.g. http://192.168.10.126:8000/storage/conversations/3/file.jpg
+    //   => /api/media/storage/conversations/3/file.jpg
+    try {
+      final uri = Uri.parse(originalUrl);
+      // The path is like /storage/conversations/3/file.jpg
+      // We proxy it through /api/media?path=storage/conversations/3/file.jpg
+      final storagePath = uri.path.replaceFirst('/storage/', '');
+      return '${AppConstants.baseUrl}/media?path=${Uri.encodeComponent(storagePath)}';
+    } catch (_) {
+      return originalUrl;
+    }
   }
 
   String _formatFileSize(int bytes) {
@@ -1788,7 +1834,8 @@ class _MessageBubble extends StatelessWidget {
 }
 
 // ── Authenticated Network Image ─────────────────────────────────────
-/// Fetches images with the Bearer token so private storage works
+/// On web: URL is already a proxy URL (goes through Laravel API with CORS).
+/// On native: fetches directly with Bearer token for private storage.
 class _AuthNetworkImage extends StatefulWidget {
   final String url;
   final double width;
@@ -1799,6 +1846,9 @@ class _AuthNetworkImage extends StatefulWidget {
   State<_AuthNetworkImage> createState() => _AuthNetworkImageState();
 }
 
+// Simple in-memory image cache
+final _imageCache = <String, Uint8List>{};
+
 class _AuthNetworkImageState extends State<_AuthNetworkImage> {
   Uint8List? _imageBytes;
   bool _loading = true;
@@ -1807,52 +1857,107 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
   @override
   void initState() {
     super.initState();
-    _fetchImage();
+    if (_imageCache.containsKey(widget.url)) {
+      _imageBytes = _imageCache[widget.url];
+      _loading = false;
+    } else {
+      _fetchImage();
+    }
+  }
+
+  @override
+  void didUpdateWidget(_AuthNetworkImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      if (_imageCache.containsKey(widget.url)) {
+        setState(() {
+          _imageBytes = _imageCache[widget.url];
+          _loading = false;
+          _error = false;
+        });
+      } else {
+        _fetchImage();
+      }
+    }
   }
 
   Future<void> _fetchImage() async {
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _error = false;
+    });
+
     try {
+      final uri = Uri.tryParse(widget.url);
+      if (uri == null || !uri.hasScheme) {
+        throw Exception('URL invalide: ${widget.url}');
+      }
+
       final token = await AuthStorage.getToken();
-      final dio = Dio();
+      final dio = Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 30),
+      ));
+
       final response = await dio.get<List<int>>(
         widget.url,
         options: Options(
           responseType: ResponseType.bytes,
-          headers: token != null
-              ? {'Authorization': 'Bearer $token'}
-              : {},
-          validateStatus: (s) => s != null && s < 500,
+          headers: {
+            'Accept': 'image/*,*/*',
+            if (token != null) 'Authorization': 'Bearer $token',
+          },
+          validateStatus: (s) => s != null && s >= 200 && s < 300,
         ),
       );
 
-      if (response.statusCode == 200 && response.data != null) {
-        if (mounted) {
-          setState(() {
-            _imageBytes = Uint8List.fromList(response.data!);
-            _loading = false;
-          });
-        }
-      } else {
-        if (mounted) setState(() {
+      if (response.data == null || response.data!.isEmpty) {
+        throw Exception('Réponse vide du serveur');
+      }
+
+      final bytes = Uint8List.fromList(response.data!);
+      _imageCache[widget.url] = bytes;
+
+      if (mounted) {
+        setState(() {
+          _imageBytes = bytes;
+          _loading = false;
+          _error = false;
+        });
+      }
+    } on DioException catch (e) {
+      debugPrint('[Image] DioException fetching ${widget.url}: ${e.type} - ${e.response?.statusCode}');
+      if (mounted) {
+        setState(() {
           _error = true;
           _loading = false;
         });
       }
     } catch (e) {
-      if (mounted) setState(() {
-        _error = true;
-        _loading = false;
-      });
+      debugPrint('[Image] Error fetching ${widget.url}: $e');
+      if (mounted) {
+        setState(() {
+          _error = true;
+          _loading = false;
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final w = widget.width;
+    final h = w * 0.65;
+
     if (_loading) {
       return Container(
-        width: widget.width,
-        height: widget.width * 0.65,
-        color: const Color(0xFFEBEBEB),
+        width: w,
+        height: h,
+        decoration: BoxDecoration(
+          color: const Color(0xFFEBEBEB),
+          borderRadius: BorderRadius.circular(4),
+        ),
         child: const Center(
           child: CircularProgressIndicator(
               strokeWidth: 2, color: AppColors.primary),
@@ -1862,23 +1967,32 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
 
     if (_error || _imageBytes == null) {
       return GestureDetector(
-        onTap: () => launchUrl(Uri.parse(widget.url),
-            mode: LaunchMode.externalApplication),
+        onTap: _fetchImage,
         child: Container(
-          width: widget.width,
-          height: 120,
-          color: const Color(0xFFEBEBEB),
-          child: Column(
+          width: w,
+          height: 140,
+          decoration: BoxDecoration(
+            color: const Color(0xFFEBEBEB),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: const Column(
             mainAxisAlignment: MainAxisAlignment.center,
-            children: const [
-              Icon(Icons.image_not_supported_rounded,
+            children: [
+              Icon(Icons.broken_image_rounded,
                   color: AppColors.grey400, size: 36),
               SizedBox(height: 6),
-              Text('Appuyer pour ouvrir',
+              Text('Image indisponible',
                   style: TextStyle(
-                      color: AppColors.grey400,
+                      color: AppColors.grey500,
                       fontSize: 12,
                       fontFamily: 'Nunito')),
+              SizedBox(height: 4),
+              Text('Appuyer pour réessayer',
+                  style: TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 11,
+                      fontFamily: 'Nunito',
+                      fontWeight: FontWeight.w600)),
             ],
           ),
         ),
@@ -1891,8 +2005,36 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
         borderRadius: BorderRadius.circular(4),
         child: Image.memory(
           _imageBytes!,
-          width: widget.width,
+          width: w,
           fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) {
+            debugPrint('[Image] Flutter decode error: $error');
+            return GestureDetector(
+              onTap: () => launchUrl(Uri.parse(widget.url),
+                  mode: LaunchMode.externalApplication),
+              child: Container(
+                width: w,
+                height: 140,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEBEBEB),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.image_not_supported_rounded,
+                        color: AppColors.grey400, size: 36),
+                    SizedBox(height: 6),
+                    Text('Appuyer pour ouvrir',
+                        style: TextStyle(
+                            color: AppColors.grey400,
+                            fontSize: 12,
+                            fontFamily: 'Nunito')),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -1918,7 +2060,15 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
           ),
           body: Center(
             child: InteractiveViewer(
-              child: Image.memory(_imageBytes!, fit: BoxFit.contain),
+              child: Image.memory(
+                _imageBytes!,
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) => const Icon(
+                  Icons.broken_image_rounded,
+                  color: Colors.white54,
+                  size: 64,
+                ),
+              ),
             ),
           ),
         ),
@@ -1972,37 +2122,39 @@ class _AudioBubble extends StatelessWidget {
                 color: Colors.white, size: 24),
           ),
           const SizedBox(width: 10),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Waveform placeholder
-              Row(
-                children: List.generate(
-                  18,
-                  (i) => Container(
-                    width: 3,
-                    height: 8.0 + (i % 4) * 5.0,
-                    margin: const EdgeInsets.symmetric(horizontal: 1.5),
-                    decoration: BoxDecoration(
-                      color: isMine
-                          ? const Color(0xFF1B7F4A).withOpacity(0.6)
-                          : const Color(0xFF8696A0).withOpacity(0.6),
-                      borderRadius: BorderRadius.circular(2),
+          // FIX: wrap waveform in Flexible to prevent overflow
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: List.generate(
+                    18,
+                    (i) => Container(
+                      width: 3,
+                      height: 8.0 + (i % 4) * 5.0,
+                      margin: const EdgeInsets.symmetric(horizontal: 1.5),
+                      decoration: BoxDecoration(
+                        color: isMine
+                            ? const Color(0xFF1B7F4A).withOpacity(0.6)
+                            : const Color(0xFF8696A0).withOpacity(0.6),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _durationStr,
-                style: TextStyle(
-                    fontSize: 11,
-                    color: isMine
-                        ? const Color(0xFF667781)
-                        : const Color(0xFF8696A0),
-                    fontFamily: 'Nunito'),
-              ),
-            ],
+                const SizedBox(height: 4),
+                Text(
+                  _durationStr,
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: isMine
+                          ? const Color(0xFF667781)
+                          : const Color(0xFF8696A0),
+                      fontFamily: 'Nunito'),
+                ),
+              ],
+            ),
           ),
         ],
       ),

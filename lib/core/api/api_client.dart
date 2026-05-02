@@ -1,10 +1,13 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../constants/app_constants.dart';
-import 'auth_storage.dart'; 
+import 'auth_storage.dart';
 
 class ApiClient {
   late final Dio _dio;
+
+  // Dio séparé pour les uploads (timeouts plus longs)
+  late final Dio _uploadDio;
 
   static final ApiClient _instance = ApiClient._internal();
   factory ApiClient() => _instance;
@@ -19,10 +22,25 @@ class ApiClient {
       ),
     );
 
-    _dio.interceptors.add(
+    _uploadDio = Dio(
+      BaseOptions(
+        baseUrl: AppConstants.baseUrl,
+        connectTimeout: const Duration(seconds: 30),
+        // Pas de receiveTimeout pendant l'upload — on attend la réponse serveur
+        receiveTimeout: const Duration(seconds: 120),
+        sendTimeout: const Duration(minutes: 5), // 5 min pour les gros fichiers
+        headers: {'Accept': 'application/json'},
+      ),
+    );
+
+    _setupInterceptors(_dio);
+    _setupInterceptors(_uploadDio);
+  }
+
+  void _setupInterceptors(Dio dio) {
+    dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
-
           final token = await AuthStorage.getToken();
           if (token != null) {
             options.headers['Authorization'] = 'Bearer $token';
@@ -41,6 +59,7 @@ class ApiClient {
   }
 
   Dio get dio => _dio;
+  Dio get uploadDio => _uploadDio;
 
   // ─── Auth ─────────────────────────────────────────────────────
   Future<Response> login(String email, String password) =>
@@ -87,21 +106,28 @@ class ApiClient {
         queryParameters: {'page': page},
       );
 
+  /// Envoi de message avec fichier — utilise _uploadDio pour les timeouts étendus
   Future<Response> sendMessage(
     int conversationId, {
     String? body,
     required String type,
     MultipartFile? file,
+    void Function(int sent, int total)? onSendProgress,
   }) async {
     final formData = FormData.fromMap({
       if (body != null && body.isNotEmpty) 'body': body,
       'type': type,
       if (file != null) 'file': file,
     });
-    return _dio.post(
+
+    // Utiliser _uploadDio si on envoie un fichier (timeouts longs)
+    final dioToUse = file != null ? _uploadDio : _dio;
+
+    return dioToUse.post(
       '/conversations/$conversationId/messages',
       data: formData,
       options: Options(contentType: 'multipart/form-data'),
+      onSendProgress: onSendProgress,
     );
   }
 
