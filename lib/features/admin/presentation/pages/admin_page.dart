@@ -556,14 +556,14 @@ class _InvitationsTabState extends ConsumerState<_InvitationsTab> {
       ),
     );
 
-    if (confirmed != true || !context.mounted) return;
+    if (confirmed != true || !mounted) return;
 
     try {
       await ApiClient().adminDeleteInvitation(invitation.id);
       ref.invalidate(adminInvitationsProvider);
-      if (context.mounted) _showSuccess(context, 'Invitation supprimée.');
+      if (mounted) _showSuccess(this.context, 'Invitation supprimée.');
     } catch (e) {
-      if (context.mounted) _showError(context, parseDioError(e));
+      if (mounted) _showError(this.context, parseDioError(e));
     }
   }
 
