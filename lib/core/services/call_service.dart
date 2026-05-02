@@ -57,9 +57,11 @@ class CallService extends ChangeNotifier {
   final List<RTCIceCandidate> _pendingCandidates = [];
   bool _remoteDescriptionSet = false;
 
-  // Timer pour annuler l'appel sortant si pas de réponse
   Timer? _callTimeoutTimer;
   static const _callTimeoutSeconds = 60;
+
+  // ── Debug logger ─────────────────────────────────────────────
+  void _log(String msg) => debugPrint('[CallService] $msg');
 
   CallState get state => _state;
   int? get currentCallId => _currentCallId;
@@ -77,28 +79,27 @@ class CallService extends ChangeNotifier {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
       {'urls': 'stun:stun1.l.google.com:19302'},
+      {'urls': 'stun:stun2.l.google.com:19302'},
     ],
     'sdpSemantics': 'unified-plan',
+    'iceCandidatePoolSize': 10,
   };
 
   // ─────────────────────────────────────────────────────────────
   // CONFIGURATION
   // ─────────────────────────────────────────────────────────────
-
   void setCurrentUser(int userId) {
     _currentUserId = userId;
-    debugPrint('[Call] Current user set: $userId');
+    _log('Current user set: $userId');
   }
 
   // ─────────────────────────────────────────────────────────────
   // ÉCOUTE GLOBALE DES CONVERSATIONS
   // ─────────────────────────────────────────────────────────────
-
   void listenGloballyToConversation(int conversationId) {
     if (_globalListenedConversations.contains(conversationId)) return;
     _globalListenedConversations.add(conversationId);
-
-    debugPrint('[Call] Écoute globale conversation $conversationId');
+    _log('Écoute globale conversation $conversationId');
 
     _ws.subscribeToConversation(conversationId, events: {
       'call.initiated': (data) =>
@@ -110,15 +111,13 @@ class CallService extends ChangeNotifier {
 
   void stopListeningGlobally(int conversationId) {
     _globalListenedConversations.remove(conversationId);
-    // Ne pas désabonner — le WebSocket reste pour les messages
   }
 
   // ─── Gestion appel entrant via WebSocket ──────────────────────
   void _handleGlobalCallInitiated(
       Map<String, dynamic> data, int conversationId) {
-    debugPrint('[Call] call.initiated reçu: $data');
+    _log('call.initiated reçu: $data');
 
-    // Extraire caller_id
     int callerId = 0;
     final callerRaw = data['caller'];
     if (data['caller_id'] is int) {
@@ -129,7 +128,7 @@ class CallService extends ChangeNotifier {
 
     // Ignorer si c'est MOI qui appelle
     if (_currentUserId != null && callerId == _currentUserId) {
-      debugPrint('[Call] Ignorer — appel initié par moi-même');
+      _log('Ignorer — appel initié par moi-même');
       return;
     }
 
@@ -140,13 +139,10 @@ class CallService extends ChangeNotifier {
             data['caller_name'] as String? ??
             'Appel entrant';
 
-    final callId =
-        data['call_id'] as int? ?? data['id'] as int? ?? 0;
+    final callId = data['call_id'] as int? ?? data['id'] as int? ?? 0;
+    final convId = data['conversation_id'] as int? ?? conversationId;
 
-    final convId =
-        data['conversation_id'] as int? ?? conversationId;
-
-    debugPrint('[Call] Appel entrant: id=$callId caller=$callerName type=$_callType');
+    _log('Appel entrant: id=$callId caller=$callerName type=$_callType');
 
     final info = IncomingCallInfo(
       callId: callId,
@@ -159,7 +155,7 @@ class CallService extends ChangeNotifier {
 
     // Déjà occupé → rejeter automatiquement
     if (isBusy) {
-      debugPrint('[Call] Occupé — rejet automatique');
+      _log('Occupé — rejet automatique');
       _autoRejectBusy(callId);
       return;
     }
@@ -167,7 +163,6 @@ class CallService extends ChangeNotifier {
     _incomingCallInfo = info;
     _setState(CallState.ringing);
 
-    // FIX: Sonnerie + notification locale système (pour écran veille)
     if (!kIsWeb) {
       _ringtone.startRinging();
       NotificationService().showIncomingCallNotificationInApp(
@@ -178,13 +173,12 @@ class CallService extends ChangeNotifier {
       );
     }
 
-    // Notifier l'UI (bannière in-app dans HomePage)
     onIncomingCall?.call(info);
   }
 
   void _handleGlobalCallStatus(Map<String, dynamic> data) {
     final status = data['status'] as String? ?? '';
-    debugPrint('[Call] call.status: $status');
+    _log('call.status: $status');
 
     onCallStatusChanged?.call(status);
 
@@ -197,6 +191,7 @@ class CallService extends ChangeNotifier {
         break;
       case 'rejected':
       case 'ended':
+      case 'missed':
         if (!kIsWeb) _ringtone.stopRinging();
         if (!kIsWeb) NotificationService().cancelAll();
         _callTimeoutTimer?.cancel();
@@ -208,7 +203,6 @@ class CallService extends ChangeNotifier {
 
   void _handleGlobalCallSignal(Map<String, dynamic> data) {
     final senderId = data['sender_id'] as int?;
-    // Ignorer nos propres signaux
     if (senderId != null && senderId == _currentUserId) return;
     _onCallSignal(data);
   }
@@ -216,13 +210,14 @@ class CallService extends ChangeNotifier {
   Future<void> _autoRejectBusy(int callId) async {
     try {
       await _api.rejectCall(callId);
-    } catch (_) {}
+    } catch (e) {
+      _log('autoRejectBusy error: $e');
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
-  // SONNERIE — méthodes publiques
+  // SONNERIE
   // ─────────────────────────────────────────────────────────────
-
   void startIncomingRingtone() {
     if (!kIsWeb) _ringtone.startRinging();
   }
@@ -232,23 +227,21 @@ class CallService extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // COMPATIBILITÉ ChatPage (no-op volontaire)
+  // COMPATIBILITÉ ChatPage
   // ─────────────────────────────────────────────────────────────
-
   void listenToConversation(int conversationId) {}
   void stopListening(int conversationId) {}
 
   // ─────────────────────────────────────────────────────────────
   // ACTIONS D'APPEL
   // ─────────────────────────────────────────────────────────────
-
   Future<Map<String, dynamic>?> initiateCall(
     int conversationId,
     String type,
     int currentUserId,
   ) async {
     if (isBusy) {
-      debugPrint('[Call] Déjà occupé — initiateCall ignoré');
+      _log('Déjà occupé — initiateCall ignoré');
       return null;
     }
 
@@ -267,29 +260,27 @@ class CallService extends ChangeNotifier {
       final callData = response.data as Map<String, dynamic>;
       _currentCallId = callData['id'] as int;
       _setState(CallState.calling);
-
-      debugPrint('[Call] Appel initié: id=$_currentCallId');
+      _log('Appel initié: id=$_currentCallId');
 
       if (!kIsWeb) {
-        // Tonalité d'attente
         await _ringtone.startDialingTone();
         await _setupPeerConnection(
             conversationId, currentUserId, isInitiator: true);
       }
 
-      // Timeout si pas de réponse après 60s
+      // Timeout 60s
       _callTimeoutTimer?.cancel();
       _callTimeoutTimer =
           Timer(const Duration(seconds: _callTimeoutSeconds), () async {
         if (_state == CallState.calling) {
-          debugPrint('[Call] Timeout — personne n\'a répondu');
+          _log('Timeout — personne n\'a répondu');
           await endCall();
         }
       });
 
       return callData;
     } catch (e) {
-      debugPrint('[Call] initiateCall error: $e');
+      _log('initiateCall error: $e');
       await _cleanup();
       rethrow;
     }
@@ -298,7 +289,7 @@ class CallService extends ChangeNotifier {
   Future<bool> answerCall(
       int callId, int conversationId, int currentUserId) async {
     if (_state == CallState.active || _state == CallState.calling) {
-      debugPrint('[Call] Déjà en appel actif — answerCall ignoré');
+      _log('Déjà en appel actif — answerCall ignoré');
       return false;
     }
 
@@ -324,10 +315,10 @@ class CallService extends ChangeNotifier {
             conversationId, currentUserId, isInitiator: false);
       }
 
-      debugPrint('[Call] Appel répondu: id=$callId');
+      _log('Appel répondu: id=$callId');
       return true;
     } catch (e) {
-      debugPrint('[Call] answerCall error: $e');
+      _log('answerCall error: $e');
       await _cleanup();
       return false;
     }
@@ -338,9 +329,9 @@ class CallService extends ChangeNotifier {
       if (!kIsWeb) await _ringtone.stopRinging();
       if (!kIsWeb) await NotificationService().cancelCallNotification(callId);
       await _api.rejectCall(callId);
-      debugPrint('[Call] Appel rejeté: id=$callId');
+      _log('Appel rejeté: id=$callId');
     } catch (e) {
-      debugPrint('[Call] rejectCall error: $e');
+      _log('rejectCall error: $e');
     } finally {
       _incomingCallInfo = null;
       _setState(CallState.idle);
@@ -354,10 +345,10 @@ class CallService extends ChangeNotifier {
       _callTimeoutTimer?.cancel();
       if (_currentCallId != null) {
         await _api.endCall(_currentCallId!);
-        debugPrint('[Call] Appel terminé: id=$_currentCallId');
+        _log('Appel terminé: id=$_currentCallId');
       }
     } catch (e) {
-      debugPrint('[Call] endCall error: $e');
+      _log('endCall error: $e');
     } finally {
       await _cleanup();
     }
@@ -371,17 +362,40 @@ class CallService extends ChangeNotifier {
   // ─────────────────────────────────────────────────────────────
   // WEBRTC
   // ─────────────────────────────────────────────────────────────
-
   Future<void> _setupLocalStream({required bool video}) async {
-    final constraints = <String, dynamic>{
-      'audio': true,
-      'video': video
-          ? {'facingMode': 'user', 'width': 640, 'height': 480}
-          : false,
-    };
-    _localStream = await navigator.mediaDevices.getUserMedia(constraints);
-    onLocalStream?.call(_localStream!);
-    debugPrint('[WebRTC] Stream local obtenu');
+    try {
+      final constraints = <String, dynamic>{
+        'audio': {
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+        },
+        'video': video
+            ? {
+                'facingMode': 'user',
+                'width': {'ideal': 1280},
+                'height': {'ideal': 720},
+                'frameRate': {'ideal': 30},
+              }
+            : false,
+      };
+      _localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      onLocalStream?.call(_localStream!);
+      _log('Stream local obtenu');
+    } catch (e) {
+      _log('setupLocalStream error: $e');
+      // Fallback sans vidéo
+      if (video) {
+        try {
+          _localStream = await navigator.mediaDevices
+              .getUserMedia({'audio': true, 'video': false});
+          onLocalStream?.call(_localStream!);
+          _log('Stream local fallback (audio only)');
+        } catch (e2) {
+          _log('setupLocalStream fallback error: $e2');
+        }
+      }
+    }
   }
 
   Future<void> _setupPeerConnection(
@@ -389,58 +403,65 @@ class CallService extends ChangeNotifier {
     int currentUserId, {
     required bool isInitiator,
   }) async {
-    _peerConnection = await createPeerConnection(_iceConfig);
+    try {
+      _peerConnection = await createPeerConnection(_iceConfig);
 
-    _localStream?.getTracks().forEach((track) {
-      _peerConnection!.addTrack(track, _localStream!);
-    });
+      _localStream?.getTracks().forEach((track) {
+        _peerConnection!.addTrack(track, _localStream!);
+      });
 
-    _peerConnection!.onTrack = (event) {
-      if (event.streams.isNotEmpty) {
-        _remoteStream = event.streams[0];
-        onRemoteStream?.call(_remoteStream!);
-        debugPrint('[WebRTC] Stream distant reçu');
-      }
-    };
+      _peerConnection!.onTrack = (event) {
+        if (event.streams.isNotEmpty) {
+          _remoteStream = event.streams[0];
+          onRemoteStream?.call(_remoteStream!);
+          _log('Stream distant reçu');
+        }
+      };
 
-    _peerConnection!.onIceCandidate = (candidate) async {
-      if (_currentCallId == null) return;
-      if (candidate.candidate == null || candidate.candidate!.isEmpty) return;
-      try {
-        await _api.sendSignal(_currentCallId!, 'ice-candidate', {
-          'candidate': candidate.candidate,
-          'sdpMid': candidate.sdpMid,
-          'sdpMLineIndex': candidate.sdpMLineIndex,
+      _peerConnection!.onIceCandidate = (candidate) async {
+        if (_currentCallId == null) return;
+        if (candidate.candidate == null || candidate.candidate!.isEmpty) return;
+        try {
+          await _api.sendSignal(_currentCallId!, 'ice-candidate', {
+            'candidate': candidate.candidate,
+            'sdpMid': candidate.sdpMid,
+            'sdpMLineIndex': candidate.sdpMLineIndex,
+          });
+        } catch (e) {
+          _log('ICE send error: $e');
+        }
+      };
+
+      _peerConnection!.onIceConnectionState = (state) {
+        _log('ICE state: $state');
+        if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
+            state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          endCall();
+        }
+      };
+
+      if (isInitiator) {
+        final offer = await _peerConnection!.createOffer({
+          'offerToReceiveAudio': true,
+          'offerToReceiveVideo': _callType == 'video',
         });
-      } catch (e) {
-        debugPrint('[WebRTC] ICE send error: $e');
+        await _peerConnection!.setLocalDescription(offer);
+        if (_currentCallId != null) {
+          await _api.sendSignal(_currentCallId!, 'offer', {
+            'sdp': offer.sdp,
+            'type': offer.type,
+          });
+          _log('Offer envoyée');
+        }
       }
-    };
-
-    _peerConnection!.onIceConnectionState = (state) {
-      debugPrint('[WebRTC] ICE state: $state');
-      if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
-          state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-        endCall();
-      }
-    };
-
-    if (isInitiator) {
-      final offer = await _peerConnection!.createOffer();
-      await _peerConnection!.setLocalDescription(offer);
-      if (_currentCallId != null) {
-        await _api.sendSignal(_currentCallId!, 'offer', {
-          'sdp': offer.sdp,
-          'type': offer.type,
-        });
-        debugPrint('[WebRTC] Offer envoyée');
-      }
+    } catch (e) {
+      _log('setupPeerConnection error: $e');
     }
   }
 
   Future<void> _onCallSignal(Map<String, dynamic> data) async {
     if (_peerConnection == null) {
-      debugPrint('[WebRTC] peerConnection null — signal ignoré');
+      _log('peerConnection null — signal ignoré');
       return;
     }
 
@@ -449,7 +470,7 @@ class CallService extends ChangeNotifier {
     final payload = _toMap(rawPayload);
 
     if (payload.isEmpty) {
-      debugPrint('[WebRTC] Payload vide pour: $signalType');
+      _log('Payload vide pour: $signalType');
       return;
     }
 
@@ -473,7 +494,7 @@ class CallService extends ChangeNotifier {
               'sdp': answer.sdp,
               'type': answer.type,
             });
-            debugPrint('[WebRTC] Answer envoyée');
+            _log('Answer envoyée');
           }
           break;
 
@@ -490,7 +511,7 @@ class CallService extends ChangeNotifier {
           _pendingCandidates.clear();
           if (!kIsWeb) _ringtone.stopRinging();
           _setState(CallState.active);
-          debugPrint('[WebRTC] Connexion établie');
+          _log('Connexion établie');
           break;
 
         case 'ice-candidate':
@@ -509,10 +530,10 @@ class CallService extends ChangeNotifier {
           break;
 
         default:
-          debugPrint('[WebRTC] Signal inconnu: $signalType');
+          _log('Signal inconnu: $signalType');
       }
     } catch (e) {
-      debugPrint('[WebRTC] Signal error ($signalType): $e');
+      _log('Signal error ($signalType): $e');
     }
   }
 
@@ -548,7 +569,7 @@ class CallService extends ChangeNotifier {
       await _peerConnection?.close();
       _peerConnection = null;
     } catch (e) {
-      debugPrint('[Call] Cleanup error: $e');
+      _log('Cleanup error: $e');
     }
     _pendingCandidates.clear();
     _remoteDescriptionSet = false;

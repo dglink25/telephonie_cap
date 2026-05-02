@@ -8,11 +8,13 @@ import '../../features/home/presentation/pages/home_page.dart';
 import '../../features/conversations/presentation/pages/conversations_page.dart';
 import '../../features/messages/presentation/pages/chat_page.dart';
 import '../../features/groups/presentation/pages/groups_page.dart';
+import '../../features/groups/presentation/pages/group_settings_page.dart';
 import '../../features/notifications/presentation/pages/notifications_page.dart';
 import '../../features/admin/presentation/pages/admin_page.dart';
 import '../../features/calls/presentation/pages/call_page.dart';
+import '../../features/calls/presentation/pages/calls_history_page.dart';
 import '../../shared/models/models.dart';
-import '../../features/groups/presentation/pages/group_settings_page.dart';
+import '../../shared/models/user_model.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authProvider);
@@ -28,7 +30,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final isInviteRoute = loc.startsWith('/invite/');
 
       if (isInviteRoute) return null;
-
       if (!isLoggedIn && !isLoginRoute) return '/login';
       if (isLoggedIn  &&  isLoginRoute) return '/home';
       return null;
@@ -59,6 +60,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/home',
             name: 'home',
             builder: (context, state) => const ConversationsPage(),
+          ),
+          GoRoute(
+            path: '/calls-history',
+            name: 'calls-history',
+            builder: (context, state) => const CallsHistoryPage(),
           ),
           GoRoute(
             path: '/groups',
@@ -92,19 +98,39 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/calls/:id',
         name: 'call',
         builder: (context, state) {
-          final call = state.extra as CallModel;
-          return CallPage(call: call);
+          final extra = state.extra;
+          CallModel call;
+          List<UserModel> participants = [];
+
+          if (extra is Map) {
+            call = extra['call'] as CallModel;
+            participants = (extra['participants'] as List<UserModel>?) ?? [];
+          } else if (extra is CallModel) {
+            call = extra;
+          } else {
+            // Fallback : créer un call minimal depuis l'ID
+            call = CallModel(
+              id: int.parse(state.pathParameters['id']!),
+              conversationId: 0,
+              callerId: 0,
+              type: 'audio',
+              status: 'pending',
+              createdAt: DateTime.now(),
+            );
+          }
+
+          return CallPage(call: call, participants: participants);
         },
       ),
 
+      // ─── Paramètres groupe (hors shell) ────────────────────
       GoRoute(
-  path: '/groups/:id/settings',
-  name: 'group-settings',
-  builder: (context, state) => GroupSettingsPage(
-    groupId: int.parse(state.pathParameters['id']!),
-  ),
-),
-
+        path: '/groups/:id/settings',
+        name: 'group-settings',
+        builder: (context, state) => GroupSettingsPage(
+          groupId: int.parse(state.pathParameters['id']!),
+        ),
+      ),
     ],
 
     errorBuilder: (context, state) => Scaffold(

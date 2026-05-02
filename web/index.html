@@ -12,16 +12,22 @@
   <link rel="icon" type="image/png" href="favicon.png"/>
   <title>Téléphonie CAP</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- Firebase -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
 
+  <!-- Pusher (pour Reverb) -->
   <script charset="utf-8" src="https://js.pusher.com/8.3.0/pusher.min.js"></script>
+
   <script>
+    // ── Config Reverb ─────────────────────────────────────────
     window.REVERB_HOST    = '192.168.10.126';
     window.REVERB_PORT    = 8080;
     window.REVERB_APP_KEY = 'xtsedffitwzc6vpwl7tz';
     window.REVERB_SCHEME  = 'http';
 
+    // Surcharger Pusher pour pointer vers Reverb local
     const _OriginalPusher = window.Pusher;
     window.Pusher = function(apiKey, options) {
       const reverbOptions = Object.assign({}, options, {
@@ -31,11 +37,71 @@
         forceTLS:          window.REVERB_SCHEME === 'https',
         disableStats:      true,
         enabledTransports: window.REVERB_SCHEME === 'https' ? ['wss'] : ['ws'],
+        // Important pour navigateurs stricts (Firefox, Safari)
+        activityTimeout:   30000,
+        pongTimeout:       10000,
       });
       return new _OriginalPusher(apiKey, reverbOptions);
     };
     Object.assign(window.Pusher, _OriginalPusher);
     window.Pusher.logToConsole = false;
+
+    // ── Notification Web (Service Worker) ─────────────────────
+    // Demander permission notifications sur le web
+    if ('Notification' in window && Notification.permission === 'default') {
+      window.addEventListener('load', () => {
+        Notification.requestPermission().then(function(permission) {
+          console.log('[Web Notif] Permission:', permission);
+        });
+      });
+    }
+
+    // Afficher notification web quand fenêtre non active
+    window._showWebNotification = function(title, body, data) {
+      if (!('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+      if (document.visibilityState === 'visible') return; // App déjà visible
+
+      const notif = new Notification(title, {
+        body: body,
+        icon: 'icons/Icon-192.png',
+        badge: 'icons/Icon-192.png',
+        tag: data && data.call_id ? 'call-' + data.call_id : 'message',
+        requireInteraction: data && data.type === 'incoming_call',
+        data: data || {},
+      });
+
+      notif.onclick = function(e) {
+        e.preventDefault();
+        window.focus();
+        notif.close();
+      };
+
+      // Auto-fermer messages après 5s (pas les appels)
+      if (!data || data.type !== 'incoming_call') {
+        setTimeout(() => notif.close(), 5000);
+      }
+    };
+
+    // Son de notification web (fallback sans audioplayers)
+    window._playWebNotificationSound = function(type) {
+      try {
+        const audio = new Audio(type === 'call' ? 'assets/assets/audio/ringtone.mp3' : 'assets/assets/audio/notification.mp3');
+        audio.volume = type === 'call' ? 1.0 : 0.5;
+        if (type === 'call') audio.loop = true;
+        window._currentCallAudio = audio;
+        audio.play().catch(e => console.warn('[WebAudio] Autoplay blocked:', e));
+      } catch(e) {
+        console.warn('[WebAudio] Error:', e);
+      }
+    };
+
+    window._stopWebCallSound = function() {
+      if (window._currentCallAudio) {
+        window._currentCallAudio.pause();
+        window._currentCallAudio = null;
+      }
+    };
   </script>
 </head>
 <body>

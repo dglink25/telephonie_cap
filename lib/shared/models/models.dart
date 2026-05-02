@@ -47,15 +47,8 @@ class GroupModel {
             : null,
       );
 
-  // ── Méthodes utilitaires ──────────────────────────────────
-
-  /// Vérifie si un utilisateur est admin du groupe.
-  /// On compare avec le pivot 'role' si disponible,
-  /// sinon on compare avec createdBy comme fallback.
   bool isAdmin(int userId) {
-    // Le créateur est toujours admin
     if (userId == createdBy) return true;
-    // Chercher dans les membres si le pivot role = admin
     try {
       final member = members.firstWhere((m) => m.id == userId);
       return member.groupRole == 'admin';
@@ -64,9 +57,7 @@ class GroupModel {
     }
   }
 
-  bool isMember(int userId) {
-    return members.any((m) => m.id == userId);
-  }
+  bool isMember(int userId) => members.any((m) => m.id == userId);
 
   String get initials {
     final words = name.trim().split(' ');
@@ -179,7 +170,7 @@ class ConversationModel {
   final MessageModel? lastMessage;
   final DateTime? lastMessageAt;
   final DateTime? lastReadAt;
-  final bool? isFavorite; // ← ajouté
+  final bool? isFavorite;
 
   const ConversationModel({
     required this.id,
@@ -190,7 +181,7 @@ class ConversationModel {
     this.lastMessage,
     this.lastMessageAt,
     this.lastReadAt,
-    this.isFavorite, // ← ajouté
+    this.isFavorite,
   });
 
   factory ConversationModel.fromJson(Map<String, dynamic> json) =>
@@ -216,7 +207,6 @@ class ConversationModel {
           final raw = pivot?['last_read_at'] as String?;
           return raw != null ? DateTime.tryParse(raw) : null;
         })(),
-        // Lire is_favorite depuis le pivot
         isFavorite: (() {
           final pivot = json['pivot'] as Map<String, dynamic>?;
           final val = pivot?['is_favorite'];
@@ -259,7 +249,7 @@ class ConversationModel {
     MessageModel? lastMessage,
     DateTime? lastMessageAt,
     DateTime? lastReadAt,
-    bool? isFavorite, // ← ajouté
+    bool? isFavorite,
   }) =>
       ConversationModel(
         id: id ?? this.id,
@@ -270,18 +260,19 @@ class ConversationModel {
         lastMessage: lastMessage ?? this.lastMessage,
         lastMessageAt: lastMessageAt ?? this.lastMessageAt,
         lastReadAt: lastReadAt ?? this.lastReadAt,
-        isFavorite: isFavorite ?? this.isFavorite, // ← ajouté
+        isFavorite: isFavorite ?? this.isFavorite,
       );
 }
 
 // ──────────────────────────────────────────────────────────────
-// Call
+// Call  ← CORRIGÉ : ajout de callee + isMissed
 // ──────────────────────────────────────────────────────────────
 class CallModel {
   final int id;
   final int conversationId;
   final int callerId;
   final UserModel? caller;
+  final UserModel? callee;   // ← NOUVEAU
   final String type;
   final String status;
   final DateTime? startedAt;
@@ -294,6 +285,7 @@ class CallModel {
     required this.conversationId,
     required this.callerId,
     this.caller,
+    this.callee,             // ← NOUVEAU
     required this.type,
     required this.status,
     this.startedAt,
@@ -309,6 +301,9 @@ class CallModel {
         caller: json['caller'] != null
             ? UserModel.fromJson(json['caller'] as Map<String, dynamic>)
             : null,
+        callee: json['callee'] != null   // ← NOUVEAU
+            ? UserModel.fromJson(json['callee'] as Map<String, dynamic>)
+            : null,
         type: json['type'] as String? ?? 'audio',
         status: json['status'] as String? ?? 'pending',
         startedAt: json['started_at'] != null
@@ -321,18 +316,20 @@ class CallModel {
         createdAt: DateTime.parse(json['created_at'] as String),
       );
 
-  bool get isPending => status == 'pending';
-  bool get isActive => status == 'active';
-  bool get isEnded => status == 'ended';
+  bool get isPending  => status == 'pending';
+  bool get isActive   => status == 'active';
+  bool get isEnded    => status == 'ended';
   bool get isRejected => status == 'rejected';
-  bool get isAudio => type == 'audio';
-  bool get isVideo => type == 'video';
+  bool get isMissed   => status == 'missed';   // ← NOUVEAU
+  bool get isAudio    => type == 'audio';
+  bool get isVideo    => type == 'video';
 
   CallModel copyWith({
     int? id,
     int? conversationId,
     int? callerId,
     UserModel? caller,
+    UserModel? callee,       // ← NOUVEAU
     String? type,
     String? status,
     DateTime? startedAt,
@@ -345,6 +342,7 @@ class CallModel {
         conversationId: conversationId ?? this.conversationId,
         callerId: callerId ?? this.callerId,
         caller: caller ?? this.caller,
+        callee: callee ?? this.callee,   // ← NOUVEAU
         type: type ?? this.type,
         status: status ?? this.status,
         startedAt: startedAt ?? this.startedAt,

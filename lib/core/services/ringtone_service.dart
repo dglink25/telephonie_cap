@@ -12,18 +12,32 @@ class RingtoneService {
   bool _isRinging = false;
   bool _isVibrating = false;
 
+  void _log(String msg) => debugPrint('[RingtoneService] $msg');
+
   // ─── Appel entrant ───────────────────────────────────────────
   Future<void> startRinging() async {
     if (_isRinging) return;
     _isRinging = true;
 
-    try {
-      await _player.setReleaseMode(ReleaseMode.loop);
-      await _player.setVolume(1.0);
-      // FIX: utilise ringtone.mp3 qui existe — dialing.mp3 absent
-      await _player.play(AssetSource('audio/ringtone.mp3'));
-    } catch (e) {
-      debugPrint('[Ringtone] Audio error: $e');
+    // Essayer ringtone.mp3, puis notification.mp3, puis silence
+    final assets = ['audio/ringtone.mp3', 'audio/notification.mp3'];
+    bool played = false;
+
+    for (final asset in assets) {
+      try {
+        await _player.setReleaseMode(ReleaseMode.loop);
+        await _player.setVolume(1.0);
+        await _player.play(AssetSource(asset));
+        _log('Sonnerie démarrée: $asset');
+        played = true;
+        break;
+      } catch (e) {
+        _log('Erreur audio $asset: $e (essai suivant)');
+      }
+    }
+
+    if (!played) {
+      _log('Aucun fichier audio disponible — vibration seule');
     }
 
     _startVibration();
@@ -38,12 +52,13 @@ class RingtoneService {
         _isVibrating = false;
         return;
       }
+      // Pattern: vibrer 1s, pause 1s
       while (_isRinging && _isVibrating) {
-        await Vibration.vibrate(duration: 800);
+        await Vibration.vibrate(duration: 1000);
         await Future.delayed(const Duration(milliseconds: 1200));
       }
     } catch (e) {
-      debugPrint('[Ringtone] Vibration error: $e');
+      _log('Vibration error: $e');
     } finally {
       _isVibrating = false;
     }
@@ -57,28 +72,34 @@ class RingtoneService {
     try {
       await _player.stop();
       await Vibration.cancel();
+      _log('Sonnerie stoppée');
     } catch (e) {
-      debugPrint('[Ringtone] Stop error: $e');
+      _log('Stop error: $e');
     }
   }
 
   // ─── Tonalité appel sortant ──────────────────────────────────
-  /// FIX: dialing.mp3 n'existe pas — on utilise notification.mp3 en fallback
-  /// ou silence si même ça échoue. On ne bloque PAS l'appel.
   Future<void> startDialingTone() async {
     if (_isRinging) return;
     _isRinging = true;
 
-    try {
-      await _player.setReleaseMode(ReleaseMode.loop);
-      await _player.setVolume(0.4);
-      
-      await _player.play(AssetSource('audio/notification.mp3'));
-    } catch (e) {
-      // Echec silencieux — l'appel continue quand même
-      debugPrint('[Ringtone] Dialing tone error (ignored): $e');
-      _isRinging = false;
+    final assets = ['audio/dialing.mp3', 'audio/notification.mp3', 'audio/ringtone.mp3'];
+
+    for (final asset in assets) {
+      try {
+        await _player.setReleaseMode(ReleaseMode.loop);
+        await _player.setVolume(0.4);
+        await _player.play(AssetSource(asset));
+        _log('Tonalité sortante: $asset');
+        return;
+      } catch (e) {
+        _log('Erreur audio sortant $asset: $e');
+      }
     }
+
+    // Échec silencieux — l'appel continue
+    _isRinging = false;
+    _log('Aucune tonalité sortante disponible (ignoré)');
   }
 
   bool get isRinging => _isRinging;

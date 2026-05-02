@@ -35,7 +35,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     super.didChangeDependencies();
     _listenToAllConversations();
   }
-  
+
   void _setupGlobalCallListener() {
     if (_callbacksSetup) return;
     _callbacksSetup = true;
@@ -60,17 +60,14 @@ class _HomePageState extends ConsumerState<HomePage> {
     };
   }
 
-  /// FIX: Brancher les callbacks de tap notification FCM (appel entrant + message)
   void _setupNotificationCallbacks() {
     NotificationService().onIncomingCallNotification = (data) {
       if (!mounted) return;
       final action = data['_action'] as String?;
 
-      // Si l'utilisateur a tapé "Répondre" depuis la notification système
       if (action == 'answer') {
         final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
-        final convId =
-            int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
+        final convId = int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
         if (callId > 0 && convId > 0) {
           _acceptCallFromNotification(
             callId: callId,
@@ -88,19 +85,15 @@ class _HomePageState extends ConsumerState<HomePage> {
         return;
       }
 
-      // Appel entrant via FCM (app au premier plan)
-      // Le WebSocket devrait déjà avoir déclenché onIncomingCall,
-      // mais au cas où le WS ne serait pas connecté, on le gère ici aussi
       final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
-      final convId =
-          int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
+      final convId = int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
       if (callId > 0 && _globalIncomingCall == null) {
         final info = IncomingCallInfo(
           callId: callId,
           conversationId: convId,
           callerName: data['caller_name'] ?? 'Appel entrant',
           callType: data['call_type'] ?? 'audio',
-          callerId: 0, // inconnu depuis FCM seul
+          callerId: 0,
           raw: data,
         );
         setState(() => _globalIncomingCall = info);
@@ -125,10 +118,6 @@ class _HomePageState extends ConsumerState<HomePage> {
       }
     });
   }
-
-  // ─────────────────────────────────────────────────────────────
-  // ACTIONS APPEL
-  // ─────────────────────────────────────────────────────────────
 
   Future<void> _acceptGlobalCall(IncomingCallInfo info) async {
     setState(() => _globalIncomingCall = null);
@@ -156,8 +145,7 @@ class _HomePageState extends ConsumerState<HomePage> {
       final callerData = info.raw['caller'];
       if (callerData is Map) {
         try {
-          caller =
-              UserModel.fromJson(Map<String, dynamic>.from(callerData));
+          caller = UserModel.fromJson(Map<String, dynamic>.from(callerData));
         } catch (_) {}
       }
 
@@ -203,23 +191,23 @@ class _HomePageState extends ConsumerState<HomePage> {
     await _callService.rejectCall(info.callId);
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // NAVIGATION
-  // ─────────────────────────────────────────────────────────────
-
+  // ─── Navigation index ─────────────────────────────────────────
+  // 0=Messages, 1=Appels, 2=Groupes, 3=Notifications, 4=Admin
   int _locationToIndex(String location) {
-    if (location.startsWith('/groups')) return 1;
-    if (location.startsWith('/notifications')) return 2;
-    if (location.startsWith('/admin')) return 3;
+    if (location.startsWith('/calls-history')) return 1;
+    if (location.startsWith('/groups')) return 2;
+    if (location.startsWith('/notifications')) return 3;
+    if (location.startsWith('/admin')) return 4;
     return 0;
   }
 
   void _onNavTap(BuildContext context, int index, bool isAdmin) {
     switch (index) {
       case 0: context.go('/home'); break;
-      case 1: context.go('/groups'); break;
-      case 2: context.go('/notifications'); break;
-      case 3: if (isAdmin) context.go('/admin'); break;
+      case 1: context.go('/calls-history'); break;
+      case 2: context.go('/groups'); break;
+      case 3: context.go('/notifications'); break;
+      case 4: if (isAdmin) context.go('/admin'); break;
     }
   }
 
@@ -231,7 +219,6 @@ class _HomePageState extends ConsumerState<HomePage> {
     final currentIndex = _locationToIndex(location);
     final isWide = MediaQuery.of(context).size.width > 768;
 
-    // Écouter les nouvelles conversations pour les abonner au WS
     ref.listen(conversationsProvider, (_, next) {
       next.whenData((conversations) {
         for (final conv in conversations) {
@@ -449,7 +436,7 @@ class _PulsingIconState extends State<_PulsingIcon>
   }
 }
 
-// ─── Layout Mobile ────────────────────────────────────────────
+// ─── Layout Mobile ─────────────────────────────────────────
 class _MobileLayout extends ConsumerWidget {
   final Widget child;
   final int currentIndex;
@@ -493,6 +480,11 @@ class _MobileLayout extends ConsumerWidget {
                 icon: Icon(Icons.chat_bubble_outline_rounded),
                 selectedIcon: Icon(Icons.chat_bubble_rounded),
                 label: 'Messages',
+              ),
+              const NavigationDestination(
+                icon: Icon(Icons.call_outlined),
+                selectedIcon: Icon(Icons.call_rounded),
+                label: 'Appels',
               ),
               const NavigationDestination(
                 icon: Icon(Icons.group_outlined),
@@ -558,23 +550,21 @@ class _WebLayout extends ConsumerWidget {
                   width: 260,
                   decoration: const BoxDecoration(
                     color: AppColors.white,
-                    border:
-                        Border(right: BorderSide(color: AppColors.grey200)),
+                    border: Border(right: BorderSide(color: AppColors.grey200)),
                   ),
                   child: Column(
                     children: [
+                      // Logo
                       Container(
                         height: 64,
                         padding: const EdgeInsets.symmetric(horizontal: 20),
                         decoration: const BoxDecoration(
-                          border: Border(
-                              bottom: BorderSide(color: AppColors.grey200)),
+                          border: Border(bottom: BorderSide(color: AppColors.grey200)),
                         ),
                         child: Row(
                           children: [
                             Container(
-                              width: 36,
-                              height: 36,
+                              width: 36, height: 36,
                               decoration: BoxDecoration(
                                 color: AppColors.primarySurface,
                                 borderRadius: BorderRadius.circular(10),
@@ -628,40 +618,44 @@ class _WebLayout extends ConsumerWidget {
                                 selected: currentIndex == 0,
                                 onTap: () => onNavTap(0)),
                             _SidebarItem(
+                                icon: Icons.call_outlined,
+                                selectedIcon: Icons.call_rounded,
+                                label: 'Appels',
+                                selected: currentIndex == 1,
+                                onTap: () => onNavTap(1)),
+                            _SidebarItem(
                                 icon: Icons.group_outlined,
                                 selectedIcon: Icons.group_rounded,
                                 label: 'Groupes',
-                                selected: currentIndex == 1,
-                                onTap: () => onNavTap(1)),
+                                selected: currentIndex == 2,
+                                onTap: () => onNavTap(2)),
                             _SidebarItem(
                                 icon: Icons.notifications_outlined,
                                 selectedIcon: Icons.notifications_rounded,
                                 label: 'Notifications',
-                                selected: currentIndex == 2,
-                                onTap: () => onNavTap(2),
+                                selected: currentIndex == 3,
+                                onTap: () => onNavTap(3),
                                 badge: unread > 0 ? unread : null),
                             if (isAdmin)
                               _SidebarItem(
                                   icon: Icons.admin_panel_settings_outlined,
-                                  selectedIcon:
-                                      Icons.admin_panel_settings_rounded,
+                                  selectedIcon: Icons.admin_panel_settings_rounded,
                                   label: 'Administration',
-                                  selected: currentIndex == 3,
-                                  onTap: () => onNavTap(3)),
+                                  selected: currentIndex == 4,
+                                  onTap: () => onNavTap(4)),
                           ],
                         ),
                       ),
+                      // User info + logout
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: const BoxDecoration(
-                          border:
-                              Border(top: BorderSide(color: AppColors.grey200)),
+                          border: Border(top: BorderSide(color: AppColors.grey200)),
                         ),
                         child: Row(
                           children: [
                             Container(
-                              width: 36,
-                              height: 36,
+                              width: 36, height: 36,
                               decoration: const BoxDecoration(
                                   color: AppColors.primary,
                                   shape: BoxShape.circle),
@@ -745,31 +739,24 @@ class _SidebarItem extends StatelessWidget {
           onTap: onTap,
           borderRadius: BorderRadius.circular(12),
           child: Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             child: Row(
               children: [
                 Icon(selected ? selectedIcon : icon,
-                    color:
-                        selected ? AppColors.primary : AppColors.grey500,
+                    color: selected ? AppColors.primary : AppColors.grey500,
                     size: 20),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(label,
                       style: TextStyle(
                           fontSize: 14,
-                          fontWeight: selected
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                          color: selected
-                              ? AppColors.primary
-                              : AppColors.grey600,
+                          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                          color: selected ? AppColors.primary : AppColors.grey600,
                           fontFamily: 'Nunito')),
                 ),
                 if (badge != null)
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 2),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppColors.primary,
                       borderRadius: BorderRadius.circular(10),
@@ -812,9 +799,7 @@ class _WebFooter extends StatelessWidget {
           const SizedBox(width: 16),
           const Text('Version 1.0.0',
               style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.grey400,
-                  fontFamily: 'Nunito')),
+                  fontSize: 12, color: AppColors.grey400, fontFamily: 'Nunito')),
         ],
       ),
     );
