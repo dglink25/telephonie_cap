@@ -50,6 +50,22 @@ class NotificationsNotifier extends StateNotifier<NotificationsState> {
     }
   }
 
+  /// Ajoute une notification reçue en temps réel via Reverb.
+  void addRealtimeNotification(Map<String, dynamic> data) {
+    try {
+      final notif = NotificationModel.fromJson(data);
+      final current = state.notifications.asData?.value;
+      if (current == null) return;
+      if (current.any((n) => n.id == notif.id)) return;
+
+      final updated = List<NotificationModel>.from([notif, ...current]);
+      state = state.copyWith(
+        notifications: AsyncData(updated),
+        unreadCount: state.unreadCount + 1,
+      );
+    } catch (_) {}
+  }
+
   Future<void> markRead(String id) async {
     try {
       await _api.readNotification(id);
@@ -99,7 +115,6 @@ final notificationsProvider =
     StateNotifierProvider<NotificationsNotifier, NotificationsState>(
   (ref) => NotificationsNotifier(),
 );
-
 
 final unreadCountProvider = Provider<int>((ref) {
   return ref.watch(notificationsProvider).unreadCount;

@@ -8,6 +8,7 @@ import '../../../../shared/models/models.dart';
 import '../../../../shared/models/user_model.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
 import '../../../auth/data/auth_provider.dart';
+import '../../../../core/services/call_service.dart';
 
 // ─── Provider historique global ───────────────────────────────
 final allCallsHistoryProvider = FutureProvider<List<CallModel>>((ref) async {
@@ -125,22 +126,30 @@ class CallsHistoryPage extends ConsumerWidget {
       case CallFilter.outgoing:
         return calls.where((c) => c.callerId == currentUserId).toList();
       case CallFilter.incoming:
-        return calls.where((c) => c.callerId != currentUserId).toList();
+        
+        return calls.where((c) => 
+          c.callerId != currentUserId && 
+          c.status != 'missed' && 
+          c.status != 'rejected'
+        ).toList();
       case CallFilter.missed:
         return calls
             .where((c) =>
-                c.callerId != currentUserId && c.status == 'missed' ||
-                c.callerId != currentUserId && c.status == 'rejected')
+                c.callerId != currentUserId && 
+                (c.status == 'missed' || c.status == 'rejected'))
             .toList();
     }
   }
 
   void _handleCallTap(BuildContext context, WidgetRef ref, CallModel call, UserModel? currentUser) {
-    // Rappeler cette personne
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (_) => _CallActionSheet(call: call, currentUserId: currentUser?.id ?? 0),
+      builder: (_) => _CallActionSheet(
+        call: call, 
+        currentUserId: currentUser?.id ?? 0,
+        currentUser: currentUser,
+      ),
     );
   }
 
@@ -202,6 +211,262 @@ class CallsHistoryPage extends ConsumerWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _CallActionSheet extends ConsumerWidget {
+  final CallModel call;
+  final int currentUserId;
+  final UserModel? currentUser;
+
+  const _CallActionSheet({
+    required this.call, 
+    required this.currentUserId,
+    this.currentUser,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isOutgoing = call.callerId == currentUserId;
+    final contactName = isOutgoing
+        ? (call.callee?.fullName ?? 'Correspondant')
+        : (call.caller?.fullName ?? 'Inconnu');
+    
+    final callService = CallService();
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 36, height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.grey200,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                AvatarWidget(name: contactName, size: 48),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(contactName,
+                          style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700,
+                            fontFamily: 'Nunito', color: AppColors.grey800,
+                          )),
+                      Text(timeago.format(call.createdAt, locale: 'fr'),
+                          style: const TextStyle(
+                            fontSize: 12, color: AppColors.grey400,
+                            fontFamily: 'Nunito',
+                          )),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Divider(color: AppColors.grey100),
+          ListTile(
+            leading: Container(
+              width: 40, height: 40,
+              decoration: BoxDecoration(
+                color: AppColors.primarySurface, borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.call_rounded, color: AppColors.primary, size: 20),
+            ),
+            title: const Text('Appel audio',
+                style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600)),
+            onTap: () async {
+              Navigator.pop(context);
+              
+              // ✅ BUG FIX 2: Initier un vrai appel audio
+              if (currentUser == null) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Utilisateur non authentifié')),
+                  );
+                }
+                return;
+              }
+              
+              if (callService.isBusy) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Un appel est déjà en cours')),
+                  );
+                }
+                return;
+              }
+              
+              // Afficher un indicateur de chargement
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (dialogContext) => const _CallingDialog(),
+              );
+              
+              try {
+                final callData = await callService.initiateCall(
+                  call.conversationId, 
+                  'audio', 
+                  currentUser!.id
+                );
+                
+                if (context.mounted) {
+                  Navigator.of(context, rootNavigator: true).pop(); // Fermer le dialog
+                  
+                  if (callData != null) {
+                    final newCall = CallModel.fromJson(callData);
+                    // Naviguer vers la page d'appel
+                    context.push('/calls/${newCall.id}', extra: newCall);
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Impossible de démarrer l\'appel')),
+                    );
+                  }
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  Navigator.of(context, rootNavigator: true).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Erreur: ${e.toString()}')),
+                  );
+                }
+              }
+            },
+          ),
+          ListTile(
+            leading: Container(
+              width: 40, height: 40,
+              decoration: BoxDecoration(
+                color: AppColors.primarySurface, borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.videocam_rounded, color: AppColors.primary, size: 20),
+            ),
+            title: const Text('Appel vidéo',
+                style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600)),
+            onTap: () async {
+              Navigator.pop(context);
+              
+              // ✅ BUG FIX 2: Initier un vrai appel vidéo
+              if (currentUser == null) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Utilisateur non authentifié')),
+                  );
+                }
+                return;
+              }
+              
+              if (callService.isBusy) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Un appel est déjà en cours')),
+                  );
+                }
+                return;
+              }
+              
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (dialogContext) => const _CallingDialog(),
+              );
+              
+              try {
+                final callData = await callService.initiateCall(
+                  call.conversationId, 
+                  'video', 
+                  currentUser!.id
+                );
+                
+                if (context.mounted) {
+                  Navigator.of(context, rootNavigator: true).pop();
+                  
+                  if (callData != null) {
+                    final newCall = CallModel.fromJson(callData);
+                    context.push('/calls/${newCall.id}', extra: newCall);
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Impossible de démarrer l\'appel vidéo')),
+                    );
+                  }
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  Navigator.of(context, rootNavigator: true).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Erreur: ${e.toString()}')),
+                  );
+                }
+              }
+            },
+          ),
+          ListTile(
+            leading: Container(
+              width: 40, height: 40,
+              decoration: BoxDecoration(
+                color: AppColors.grey100, borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.chat_bubble_outline_rounded,
+                  color: AppColors.grey500, size: 20),
+            ),
+            title: const Text('Envoyer un message',
+                style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600)),
+            onTap: () {
+              Navigator.pop(context);
+              // Celui-ci reste une navigation vers le chat (comportement attendu)
+              context.push('/conversations/${call.conversationId}');
+            },
+          ),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+}
+
+// Dialog "En train d'appeler" (déjà existant dans ChatPage, à copier si nécessaire)
+class _CallingDialog extends StatelessWidget {
+  const _CallingDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.all(28),
+        decoration: BoxDecoration(
+            color: Colors.white, borderRadius: BorderRadius.circular(20)),
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(color: AppColors.primary),
+            SizedBox(height: 16),
+            Text('Connexion en cours...',
+                style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.grey700)),
+          ],
+        ),
       ),
     );
   }
@@ -443,118 +708,5 @@ class _CallTile extends StatelessWidget {
     } else {
       return '${dt.day}/${dt.month}/${dt.year % 100}';
     }
-  }
-}
-
-// ─── Sheet action (rappeler) ─────────────────────────────────
-class _CallActionSheet extends ConsumerWidget {
-  final CallModel call;
-  final int currentUserId;
-
-  const _CallActionSheet({required this.call, required this.currentUserId});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final isOutgoing = call.callerId == currentUserId;
-    final contactName = isOutgoing
-        ? (call.callee?.fullName ?? 'Correspondant')
-        : (call.caller?.fullName ?? 'Inconnu');
-
-    return Container(
-      margin: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 12),
-          Container(
-            width: 36, height: 4,
-            decoration: BoxDecoration(
-              color: AppColors.grey200,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(
-              children: [
-                AvatarWidget(name: contactName, size: 48),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(contactName,
-                          style: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700,
-                            fontFamily: 'Nunito', color: AppColors.grey800,
-                          )),
-                      Text(timeago.format(call.createdAt, locale: 'fr'),
-                          style: const TextStyle(
-                            fontSize: 12, color: AppColors.grey400,
-                            fontFamily: 'Nunito',
-                          )),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Divider(color: AppColors.grey100),
-          ListTile(
-            leading: Container(
-              width: 40, height: 40,
-              decoration: BoxDecoration(
-                color: AppColors.primarySurface, borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(Icons.call_rounded, color: AppColors.primary, size: 20),
-            ),
-            title: const Text('Appel audio',
-                style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600)),
-            onTap: () {
-              Navigator.pop(context);
-              context.push('/conversations/${call.conversationId}');
-            },
-          ),
-          ListTile(
-            leading: Container(
-              width: 40, height: 40,
-              decoration: BoxDecoration(
-                color: AppColors.primarySurface, borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(Icons.videocam_rounded, color: AppColors.primary, size: 20),
-            ),
-            title: const Text('Appel vidéo',
-                style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600)),
-            onTap: () {
-              Navigator.pop(context);
-              context.push('/conversations/${call.conversationId}');
-            },
-          ),
-          ListTile(
-            leading: Container(
-              width: 40, height: 40,
-              decoration: BoxDecoration(
-                color: AppColors.grey100, borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(Icons.chat_bubble_outline_rounded,
-                  color: AppColors.grey500, size: 20),
-            ),
-            title: const Text('Envoyer un message',
-                style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600)),
-            onTap: () {
-              Navigator.pop(context);
-              context.push('/conversations/${call.conversationId}');
-            },
-          ),
-          const SizedBox(height: 16),
-        ],
-      ),
-    );
   }
 }
