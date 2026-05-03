@@ -5,6 +5,7 @@ import '../../../core/api/api_client.dart';
 import '../../../core/api/auth_storage.dart';
 import '../../../core/websocket/websocket_service.dart';
 import '../../../shared/models/user_model.dart';
+import 'dart:js' as js;
 
 // ─── Parseur d'erreurs centralisé ─────────────────────────────────────────────
 String parseDioError(Object e) {
@@ -141,12 +142,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
     try {
       final response = await _api.login(email, password);
 
-      debugPrint('╔══════════════════════════════════════════════');
+      debugPrint('╔════════════════════════════════════════════════');
       debugPrint('║ [Auth.login] Réponse reçue');
       debugPrint('║ Status  : ${response.statusCode}');
       debugPrint('║ Type    : ${response.data.runtimeType}');
       debugPrint('║ Data    : ${response.data}');
-      debugPrint('╚══════════════════════════════════════════════');
+      debugPrint('╚════════════════════════════════════════════════');
 
       final data = _asMap(response.data);
 
@@ -215,6 +216,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final rawToken  = data['token'];
       final rawUser   = data['user'];
 
+      if (kIsWeb) {
+        sendTokenToSW(rawToken);
+      }
+
       if (rawToken is! String || rawToken.isEmpty) {
         throw FormatException("Champ 'token' manquant : $rawToken");
       }
@@ -248,6 +253,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   void clearError() => state = state.copyWith(error: null);
+
+  void sendTokenToSW(String token) {
+    final controller = js.context['navigator']['serviceWorker']['controller'];
+    if (controller != null) {
+      controller.callMethod('postMessage', [
+        {
+          'type': 'SET_AUTH_TOKEN',
+          'token': token,
+        }
+      ]);
+    }
+  }
 }
 
 // ─── Providers ────────────────────────────────────────────────────────────────

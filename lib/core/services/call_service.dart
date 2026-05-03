@@ -81,14 +81,8 @@ class CallService extends ChangeNotifier {
 
   // ICE servers — STUN public + TURN gratuit (open-relay)
   static const Map<String, dynamic> _iceConfig = {
-    'iceServers': [
-      {'urls': 'stun:stun.l.google.com:19302'},
-      {'urls': 'stun:stun1.l.google.com:19302'},
-      {'urls': 'stun:stun2.l.google.com:19302'},
-      {'urls': 'stun:stun.cloudflare.com:3478'},
-    ],
+    'iceServers': [],   // LAN direct, pas besoin de STUN
     'sdpSemantics': 'unified-plan',
-    'iceCandidatePoolSize': 10,
   };
 
   void setCurrentUser(int userId) {

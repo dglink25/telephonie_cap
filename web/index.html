@@ -15,12 +15,7 @@
   <title>Téléphonie CAP</title>
   <link rel="manifest" href="manifest.json">
 
-  <!-- Firebase -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
-
-  <!-- Pusher (pour Reverb) -->
-  <script charset="utf-8" src="https://js.pusher.com/8.3.0/pusher.min.js"></script>
+  <script src="js/pusher.min.js"></script>
 
   <script>
     // ── Enregistrement du Service Worker Firebase ─────────────
@@ -65,7 +60,7 @@
         wssPort:           window.REVERB_PORT,
         forceTLS:          window.REVERB_SCHEME === 'https',
         disableStats:      true,
-        enabledTransports: window.REVERB_SCHEME === 'https' ? ['wss'] : ['ws'],
+        enabledTransports: ['ws'], 
         activityTimeout:   30000,
         pongTimeout:       10000,
       });
