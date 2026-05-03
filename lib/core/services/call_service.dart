@@ -36,6 +36,14 @@ class CallService extends ChangeNotifier {
   final ApiClient _api = ApiClient();
   final WebSocketService _ws = WebSocketService();
 
+  final _callStatusController = StreamController<String>.broadcast();
+  final _incomingCallController = StreamController<IncomingCallInfo>.broadcast();
+  final _errorController = StreamController<String>.broadcast();
+
+  Stream<String> get callStatusStream => _callStatusController.stream;
+  Stream<IncomingCallInfo> get incomingCallStream => _incomingCallController.stream;
+  Stream<String> get errorStream => _errorController.stream;
+
   CallState _state = CallState.idle;
   int? _currentCallId;
   int? _currentConversationId;
@@ -170,14 +178,28 @@ class CallService extends ChangeNotifier {
       RingtoneService.instance.startRinging();
     }
 
-    onIncomingCall?.call(info);
+    void _emitIncomingCall(IncomingCallInfo info) {
+      _incomingCallController.add(info);
+    }
+
+    @override
+    void dispose() {
+      _callStatusController.close();
+      _incomingCallController.close();
+      _errorController.close();
+      _cleanup();
+      super.dispose();
+    }
+    
   }
 
   void _handleGlobalCallStatus(Map<String, dynamic> data) {
     final status = data['status'] as String? ?? '';
     _log('call.status: $status');
 
-    onCallStatusChanged?.call(status);
+    void _emitStatus(String status) {
+      _callStatusController.add(status);
+    }
 
     switch (status) {
       case 'active':
@@ -356,7 +378,7 @@ class CallService extends ChangeNotifier {
           await _api.endCall(_currentCallId!);
           _log('Appel terminé: $_currentCallId');
         } on DioException catch (e) {
-          // FIX: 422 = appel déjà terminé côté serveur (missed/rejected/ended)
+          
           // C'est normal si le job AutoMarkCallMissed a déjà agi → on ignore
           final statusCode = e.response?.statusCode;
           if (statusCode == 422) {

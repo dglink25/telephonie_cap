@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../api/api_client.dart';
 import 'dart:ui' show Color;
+import 'package:flutter/services.dart';
+import '../constants/app_constants.dart';
+import 'dart:js' as js;
 
 
 class NotificationService {
@@ -19,13 +22,20 @@ class NotificationService {
 
   bool _initialized = false;
 
+  void _requestWebPermission() {
+      
+  }
+
   // ── Initialisation ─────────────────────────────────────────────
   Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
 
-
-    
+    if (kIsWeb) {
+      // Sur web: demander permission via JS interop
+      _requestWebPermission();
+      return; // Pas de flutter_local_notifications sur web
+    }
 
     // Créer les canaux Android AVANT d'initialiser le plugin
     await _setupAndroidChannels();
@@ -125,6 +135,16 @@ class NotificationService {
     );
   }
 
+
+  void _showWebNotification({required String title, required String body, required Map<String, dynamic> data}) {
+  // Appel JS via dart:js_interop
+    try {
+      js.context.callMethod('_showWebNotification', [title, body, js.JsObject.jsify(data)]);
+    } catch (e) {
+      debugPrint('[WebNotif] Error: $e');
+    }
+  }
+
   // ── Notification locale appel entrant ────────────────────────
   Future<void> showIncomingCallNotificationInApp({
     required String callerName,
@@ -132,7 +152,20 @@ class NotificationService {
     required int callId,
     required int conversationId,
   }) async {
-    if (kIsWeb) return;
+    if (kIsWeb) {
+      _showWebNotification(
+        title: callerName,
+        body: callType == 'video' ? 'Appel vidéo entrant' : 'Appel audio entrant',
+        data: {
+          'type': 'incoming_call',
+          'call_id': callId.toString(),
+          'conversation_id': conversationId.toString(),
+          'call_type': callType,
+        },
+      );
+      return;
+    }
+
     await _showCallNotification(
       callId: callId.toString(),
       callerName: callerName,
@@ -217,7 +250,7 @@ class NotificationService {
       actions: [
         const AndroidNotificationAction(
           'reject_call',
-          '❌ Refuser',
+          ' Refuser',
           cancelNotification: true,
           showsUserInterface: false,
           inputs: [],

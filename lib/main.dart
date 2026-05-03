@@ -23,6 +23,12 @@ void main() async {
     statusBarIconBrightness: Brightness.dark,
   ));
 
+  try {
+    await NotificationService().init();
+  } catch (e) {
+    debugPrint('[Notifications] Init error (ignored): $e');
+  }
+
 
 
   // Notifications locales uniquement sur mobile (pas web)

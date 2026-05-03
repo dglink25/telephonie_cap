@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'dart:js' as js;
 import '../../../../core/services/call_service.dart';
 import '../../../../core/services/notification_service.dart';
 import '../../../../core/theme/app_theme.dart';
@@ -29,12 +31,86 @@ class _HomePageState extends ConsumerState<HomePage> {
     super.initState();
     _setupGlobalCallListener();
     _setupNotificationCallbacks();
+    _checkNotificationPermission();
+  }
+
+  // ─── Méthodes de gestion des permissions de notification Web ───────────────
+  Future<String> _getWebNotifPermission() async {
+    if (!kIsWeb) return 'denied';
+    try {
+      final permission = js.context.callMethod('Notification', ['permission']);
+      return permission?.toString() ?? 'default';
+    } catch (e) {
+      debugPrint('[Notification] Erreur get permission: $e');
+      return 'denied';
+    }
+  }
+
+  Future<void> _requestWebNotifPermission() async {
+    if (!kIsWeb) return;
+    try {
+      final permission = await js.context.callMethod('Notification', ['requestPermission']);
+      if (permission == 'granted') {
+        debugPrint('[Notification] Permission accordée');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Notifications activées'),
+              backgroundColor: AppColors.success,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('[Notification] Erreur demande permission: $e');
+    }
+  }
+
+  void _checkNotificationPermission() async {
+    if (!kIsWeb) return;
+    // Vérifier via JS interop
+    final permission = await _getWebNotifPermission();
+    if (permission == 'default') {
+      // Montrer un banner non-intrusif
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showNotificationPermissionBanner();
+      });
+    }
+  }
+
+  void _showNotificationPermissionBanner() {
+    ScaffoldMessenger.of(context).showMaterialBanner(
+      MaterialBanner(
+        content: const Text(
+          'Activez les notifications pour recevoir les appels entrants',
+          style: TextStyle(fontFamily: 'Nunito'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              ScaffoldMessenger.of(context).hideCurrentMaterialBanner();
+              _requestWebNotifPermission();
+            },
+            child: const Text('Activer'),
+          ),
+          TextButton(
+            onPressed: () => ScaffoldMessenger.of(context).hideCurrentMaterialBanner(),
+            child: const Text('Plus tard'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _listenToAllConversations();
+    final user = ref.read(currentUserProvider);
+    if (user != null && !_callbacksSetup) {
+      _callService.setCurrentUser(user.id);
+      _setupGlobalCallListener();
+      _callbacksSetup = true;
+    }
   }
 
   void _setupGlobalCallListener() {

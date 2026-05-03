@@ -117,17 +117,17 @@ class WebSocketService {
     }
   }
 
-
   Future<void> _resubscribeAll() async {
-    final toResubscribe = Map<String, Map<String, EventCallback>>.from(
-        _pendingSubscriptions);
+    final toResubscribe = Map<String, Map<String, EventCallback>>.from(_pendingSubscriptions);
     debugPrint('[WS] Re-abonnement de ${toResubscribe.length} channels');
 
     for (final channelName in toResubscribe.keys) {
       _channels.remove(channelName);
       await _doSubscribe(channelName);
+      await Future.delayed(const Duration(milliseconds: 100));
     }
   }
+
 
   Future<void> subscribeToConversation(
     int conversationId, {
@@ -170,16 +170,20 @@ class WebSocketService {
   }
 
   Future<void> _doSubscribe(String channelName) async {
+    if (!_initialized || _pusher == null) {
+      debugPrint('[WS] _doSubscribe ignoré — pas connecté: $channelName');
+      return;
+    }
     try {
-      final channel = await _pusher.subscribe(
-        channelName: channelName,
-      );
+      final channel = await _pusher.subscribe(channelName: channelName);
       _channels[channelName] = channel;
-      debugPrint('[WS] Subscribe lancé → $channelName');
+      debugPrint('[WS] Subscribe OK → $channelName');
     } catch (e) {
-      debugPrint('[WS] Subscribe error ($channelName): $e');
+      debugPrint('[WS] Subscribe FAILED ($channelName): $e');
+      _channels.remove(channelName);
     }
   }
+
 
   Map<String, dynamic> _parseEventData(dynamic rawData) {
     if (rawData is Map<String, dynamic>) return rawData;

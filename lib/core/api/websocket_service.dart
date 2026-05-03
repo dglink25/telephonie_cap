@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:pusher_client_socket/pusher_client_socket.dart';
 import '../constants/app_constants.dart';
 import '../api/auth_storage.dart';
+import 'dart:js' as js;
 
 typedef EventCallback = void Function(Map<String, dynamic> data);
 
@@ -141,6 +142,24 @@ class WebSocketService {
       debugPrint('[WS] Subscribe error ($channelName): $e');
     }
   }
+
+  void _notifyServiceWorker(String channelName, int conversationId) {
+    if (!kIsWeb) return;
+    try {
+      final channel = js.context['navigator']['serviceWorker']['controller'];
+      if (channel != null) {
+        channel.callMethod('postMessage', [
+          js.JsObject.jsify({
+            'type': 'SUBSCRIBE_CONVERSATION',
+            'conversationId': conversationId,
+          })
+        ]);
+      }
+    } catch (e) {
+      debugPrint('[WS] SW notify error: $e');
+    }
+  }
+
 
   void _resubscribeAll() {
     final toResubscribe = Map<String, Map<String, EventCallback>>.from(
