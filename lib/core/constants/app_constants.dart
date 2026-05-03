@@ -2,7 +2,7 @@ class AppConstants {
   AppConstants._();
 
 
-  static const String _serverIp = '192.168.10.126';
+  static const String _serverIp = '10.234.148.159';
 
   static const String baseUrl        = 'http://$_serverIp:8000/api';
   static const String storageBaseUrl = 'http://$_serverIp:8000';
