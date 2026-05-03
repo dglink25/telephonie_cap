@@ -4,7 +4,7 @@ import 'dart:html' as html;
 class AppConstants {
   AppConstants._();
 
-<<<<<<< HEAD
+
 
   static const String _serverIp = '10.217.221.159';
 
@@ -16,7 +16,7 @@ class AppConstants {
   static const String reverbHost   = _serverIp;
   static const int    reverbPort   = 8080;
   static const String reverbScheme = 'http';
-=======
+
   static String get _serverIp {
     if (kIsWeb) {
       // Sur web, le serveur Laravel est sur le même host que la page
@@ -29,7 +29,7 @@ class AppConstants {
   static String get storageBaseUrl => 'http://$_serverIp:8000';
   static String get reverbHost => _serverIp;
   static const int reverbPort = 8080;
->>>>>>> f283bade81e22a956ec51fc6cf7b276f593775cb
+
   static const String reverbAppKey = 'xtsedffitwzc6vpwl7tz';
 
   static String get storageUrl => 'http://$_serverIp:8000/storage'; 
