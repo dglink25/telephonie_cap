@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart'
     if (dart.library.html) '../stubs/webrtc_stub.dart';
@@ -61,6 +62,9 @@ class CallService extends ChangeNotifier {
   Timer? _callTimeoutTimer;
   static const _callTimeoutSeconds = 60;
 
+  // FIX: garde-fou pour ne pas déclencher endCall plusieurs fois en parallèle
+  bool _isEndingCall = false;
+
   void _log(String msg) => debugPrint('[CallService] $msg');
 
   CallState get state => _state;
@@ -87,19 +91,18 @@ class CallService extends ChangeNotifier {
     'iceCandidatePoolSize': 10,
   };
 
-
   void setCurrentUser(int userId) {
     _currentUserId = userId;
     _log('Current user: $userId');
   }
-
 
   void listenGloballyToConversation(int conversationId) {
     if (_globalListenedConversations.contains(conversationId)) return;
     _globalListenedConversations.add(conversationId);
 
     _ws.subscribeToConversation(conversationId, events: {
-      'call.initiated': (data) => _handleGlobalCallInitiated(data, conversationId),
+      'call.initiated': (data) =>
+          _handleGlobalCallInitiated(data, conversationId),
       'call.status': (data) => _handleGlobalCallStatus(data),
       'call.signal': (data) => _handleGlobalCallSignal(data),
     });
@@ -116,7 +119,9 @@ class CallService extends ChangeNotifier {
   // ─────────────────────────────────────────────────────────────
   // GESTION APPEL ENTRANT (WebSocket)
   // ─────────────────────────────────────────────────────────────
-  void _handleGlobalCallInitiated(Map<String, dynamic> data, int conversationId) {
+
+  void _handleGlobalCallInitiated(
+      Map<String, dynamic> data, int conversationId) {
     _log('call.initiated: $data');
 
     int callerId = 0;
@@ -194,7 +199,11 @@ class CallService extends ChangeNotifier {
         if (!kIsWeb) NotificationService().cancelAll();
         _callTimeoutTimer?.cancel();
         _incomingCallInfo = null;
-        _cleanup();
+        // FIX: ne pas rappeler _cleanup() si on est l'initiateur de la fin
+        // (évite la double-fin et la double-navigation)
+        if (_state != CallState.idle && _state != CallState.ended) {
+          _cleanupState();
+        }
         break;
     }
   }
@@ -206,18 +215,22 @@ class CallService extends ChangeNotifier {
   }
 
   Future<void> _autoRejectBusy(int callId) async {
-    try { await _api.rejectCall(callId); } catch (_) {}
+    try {
+      await _api.rejectCall(callId);
+    } catch (_) {}
   }
 
   // ─────────────────────────────────────────────────────────────
   // SONNERIE
   // ─────────────────────────────────────────────────────────────
+
   void startIncomingRingtone() => RingtoneService.instance.startRinging();
   void stopIncomingRingtone() => RingtoneService.instance.stopRinging();
 
   // ─────────────────────────────────────────────────────────────
   // ACTIONS D'APPEL
   // ─────────────────────────────────────────────────────────────
+
   Future<Map<String, dynamic>?> initiateCall(
     int conversationId,
     String type,
@@ -235,6 +248,7 @@ class CallService extends ChangeNotifier {
       _currentConversationId = conversationId;
       _pendingCandidates.clear();
       _remoteDescriptionSet = false;
+      _isEndingCall = false;
 
       if (!kIsWeb) {
         await _setupLocalStream(video: type == 'video');
@@ -250,12 +264,14 @@ class CallService extends ChangeNotifier {
       await RingtoneService.instance.startDialingTone();
 
       if (!kIsWeb) {
-        await _setupPeerConnection(conversationId, currentUserId, isInitiator: true);
+        await _setupPeerConnection(conversationId, currentUserId,
+            isInitiator: true);
       }
 
       // Timeout 60s
       _callTimeoutTimer?.cancel();
-      _callTimeoutTimer = Timer(const Duration(seconds: _callTimeoutSeconds), () async {
+      _callTimeoutTimer =
+          Timer(const Duration(seconds: _callTimeoutSeconds), () async {
         if (_state == CallState.calling) {
           _log('Timeout — pas de réponse');
           await endCall();
@@ -273,7 +289,8 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  Future<bool> answerCall(int callId, int conversationId, int currentUserId) async {
+  Future<bool> answerCall(
+      int callId, int conversationId, int currentUserId) async {
     if (_state == CallState.active || _state == CallState.calling) {
       _log('Déjà en appel');
       return false;
@@ -285,6 +302,7 @@ class CallService extends ChangeNotifier {
       _currentConversationId = conversationId;
       _pendingCandidates.clear();
       _remoteDescriptionSet = false;
+      _isEndingCall = false;
 
       RingtoneService.instance.stopRinging();
       if (!kIsWeb) await NotificationService().cancelCallNotification(callId);
@@ -298,7 +316,8 @@ class CallService extends ChangeNotifier {
       _incomingCallInfo = null;
 
       if (!kIsWeb) {
-        await _setupPeerConnection(conversationId, currentUserId, isInitiator: false);
+        await _setupPeerConnection(conversationId, currentUserId,
+            isInitiator: false);
       }
 
       _log('Appel répondu: $callId');
@@ -326,18 +345,39 @@ class CallService extends ChangeNotifier {
   }
 
   Future<void> endCall() async {
+    // FIX CRITIQUE: garde-fou contre les appels multiples simultanés
+    if (_isEndingCall) {
+      _log('endCall déjà en cours — ignoré');
+      return;
+    }
+    _isEndingCall = true;
+
     try {
       RingtoneService.instance.stopRinging();
-      if (!kIsWeb) await NotificationService().cancelAll();
+      if (!kIsWeb) NotificationService().cancelAll();
       _callTimeoutTimer?.cancel();
+
       if (_currentCallId != null) {
-        await _api.endCall(_currentCallId!);
-        _log('Appel terminé: $_currentCallId');
+        try {
+          await _api.endCall(_currentCallId!);
+          _log('Appel terminé: $_currentCallId');
+        } on DioException catch (e) {
+          // FIX: 422 = appel déjà terminé côté serveur (missed/rejected/ended)
+          // C'est normal si le job AutoMarkCallMissed a déjà agi → on ignore
+          final statusCode = e.response?.statusCode;
+          if (statusCode == 422) {
+            _log(
+                'endCall 422 ignoré — appel déjà terminé côté serveur (statut: ${e.response?.data})');
+          } else {
+            _log('endCall error: $e');
+          }
+        } catch (e) {
+          _log('endCall error: $e');
+        }
       }
-    } catch (e) {
-      _log('endCall error: $e');
     } finally {
       await _cleanup();
+      _isEndingCall = false;
     }
   }
 
@@ -349,6 +389,7 @@ class CallService extends ChangeNotifier {
   // ─────────────────────────────────────────────────────────────
   // WEBRTC (native uniquement)
   // ─────────────────────────────────────────────────────────────
+
   Future<void> _setupLocalStream({required bool video}) async {
     try {
       final constraints = <String, dynamic>{
@@ -379,10 +420,12 @@ class CallService extends ChangeNotifier {
           _log('Stream local fallback audio-only');
         } catch (e2) {
           _log('setupLocalStream fallback error: $e2');
-          onError?.call('Impossible d\'accéder au microphone/caméra. Vérifiez les permissions.');
+          onError?.call(
+              'Impossible d\'accéder au microphone/caméra. Vérifiez les permissions.');
         }
       } else {
-        onError?.call('Impossible d\'accéder au microphone. Vérifiez les permissions.');
+        onError?.call(
+            'Impossible d\'accéder au microphone. Vérifiez les permissions.');
       }
     }
   }
@@ -465,7 +508,8 @@ class CallService extends ChangeNotifier {
           final sdp = payload['sdp'] as String?;
           final type = payload['type'] as String?;
           if (sdp == null || type == null) break;
-          await _peerConnection!.setRemoteDescription(RTCSessionDescription(sdp, type));
+          await _peerConnection!
+              .setRemoteDescription(RTCSessionDescription(sdp, type));
           _remoteDescriptionSet = true;
           for (final c in _pendingCandidates) {
             await _peerConnection!.addCandidate(c);
@@ -486,7 +530,8 @@ class CallService extends ChangeNotifier {
           final sdp = payload['sdp'] as String?;
           final type = payload['type'] as String?;
           if (sdp == null || type == null) break;
-          await _peerConnection!.setRemoteDescription(RTCSessionDescription(sdp, type));
+          await _peerConnection!
+              .setRemoteDescription(RTCSessionDescription(sdp, type));
           _remoteDescriptionSet = true;
           for (final c in _pendingCandidates) {
             await _peerConnection!.addCandidate(c);
@@ -542,6 +587,18 @@ class CallService extends ChangeNotifier {
     }
   }
 
+  // FIX: séparer le nettoyage des ressources WebRTC du changement d'état
+  // _cleanupState() = juste mettre l'état à idle (appelé depuis _handleGlobalCallStatus)
+  void _cleanupState() {
+    _pendingCandidates.clear();
+    _remoteDescriptionSet = false;
+    _currentCallId = null;
+    _incomingCallInfo = null;
+    _callTimeoutTimer?.cancel();
+    _setState(CallState.idle);
+  }
+
+  // _cleanup() = nettoyage complet (ressources + état)
   Future<void> _cleanup() async {
     try {
       _localStream?.getTracks().forEach((t) => t.stop());
@@ -563,13 +620,28 @@ class CallService extends ChangeNotifier {
   }
 
   void _setState(CallState newState) {
+    if (_state == newState) return; // FIX: éviter les rebuilds inutiles
     _state = newState;
     notifyListeners();
   }
 
   String _parseError(dynamic e) {
+    // FIX: 422 avec message "appel déjà en cours" → message clair
+    if (e is DioException) {
+      final statusCode = e.response?.statusCode;
+      final data = e.response?.data;
+      if (statusCode == 422) {
+        final msg = data is Map ? (data['message'] as String? ?? '') : '';
+        if (msg.contains('en cours')) {
+          return 'Un appel est déjà en cours dans cette conversation.';
+        }
+        return 'L\'appel n\'est plus disponible.';
+      }
+    }
     final msg = e.toString().toLowerCase();
-    if (msg.contains('connection') || msg.contains('network') || msg.contains('socket')) {
+    if (msg.contains('connection') ||
+        msg.contains('network') ||
+        msg.contains('socket')) {
       return 'Erreur réseau. Vérifiez votre connexion internet.';
     }
     if (msg.contains('permission') || msg.contains('denied')) {

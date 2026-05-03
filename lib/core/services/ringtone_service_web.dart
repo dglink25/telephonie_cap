@@ -1,7 +1,12 @@
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:js' as js;
 import 'package:flutter/foundation.dart';
 import 'ringtone_service.dart';
+import 'dart:js_interop';
+
+@JS('_playWebNotificationSound')
+external void _playWebNotificationSoundJS(String type);
+
+@JS('_stopWebCallSound')
+external void _stopWebCallSoundJS();
 
 RingtoneService createRingtoneService() => WebRingtoneService();
 
@@ -16,7 +21,7 @@ class WebRingtoneService extends RingtoneService {
     if (_isRinging) return;
     _isRinging = true;
     try {
-      js.context.callMethod('_playWebNotificationSound', ['call']);
+      _playWebNotificationSoundJS('call');
     } catch (e) {
       debugPrint('[WebRingtone] startRinging error: $e');
     }
@@ -27,7 +32,7 @@ class WebRingtoneService extends RingtoneService {
     if (!_isRinging) return;
     _isRinging = false;
     try {
-      js.context.callMethod('_stopWebCallSound', []);
+      _stopWebCallSoundJS();
     } catch (e) {
       debugPrint('[WebRingtone] stopRinging error: $e');
     }
@@ -38,7 +43,7 @@ class WebRingtoneService extends RingtoneService {
     if (_isRinging) return;
     _isRinging = true;
     try {
-      js.context.callMethod('_playWebNotificationSound', ['dialing']);
+      _playWebNotificationSoundJS('dialing');
     } catch (e) {
       debugPrint('[WebRingtone] startDialingTone error: $e');
     }
