@@ -45,9 +45,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
   bool _isTyping = false;
   bool _otherTyping = false;
+  bool _otherRecording = false; // ← NOUVEAU
   String? _otherTypingName;
   ConversationModel? _conversation;
   Timer? _typingTimer;
+  Timer? _otherTypingTimer; // ← NOUVEAU : timer pour reset auto
 
   bool _isSendingFile = false;
   int _uploadProgress = 0;
@@ -61,29 +63,28 @@ class _ChatPageState extends ConsumerState<ChatPage>
   bool get isGroup => _conversation?.isGroup ?? false;
 
   @override
-  void initState() {
-    super.initState();
-    _recordingPulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 800),
-    )..repeat(reverse: true);
+void initState() {
+  super.initState();
+  _recordingPulseController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 800),
+  )..repeat(reverse: true);
 
-    _loadConversation();
-    _markRead();
-    _subscribeToWebSocket();
+  _loadConversation();
+  _markRead();
+  _subscribeToWebSocket(); // ← directement, pas dans addPostFrameCallback
 
-    _scrollController.addListener(() {
-      if (_scrollController.position.pixels <= 200 &&
-          _scrollController.position.maxScrollExtent > 0) {
-        ref
-            .read(messagesProvider(widget.conversationId).notifier)
-            .loadMore();
-      }
-    });
+  _scrollController.addListener(() {
+    if (_scrollController.position.pixels <= 200 &&
+        _scrollController.position.maxScrollExtent > 0) {
+      ref
+          .read(messagesProvider(widget.conversationId).notifier)
+          .loadMore();
+    }
+  });
 
-    _textController.addListener(_onTextChanged);
-  }
-
+  _textController.addListener(_onTextChanged);
+}
   void _onTextChanged() {
     final typing = _textController.text.isNotEmpty;
     if (typing != _isTyping) {
@@ -107,65 +108,83 @@ class _ChatPageState extends ConsumerState<ChatPage>
   }
 
   void _subscribeToWebSocket() {
-    final currentUser = ref.read(currentUserProvider);
+  final currentUser = ref.read(currentUserProvider);
 
-    _ws.subscribeToConversation(widget.conversationId, events: {
-      'message.sent': (data) {
-        if (!mounted) return;
+  // S'abonner immédiatement — WebSocketService gère la queue interne
+  // si le canal n'est pas encore connecté (_pendingSubscriptions)
+  _ws.subscribeToConversation(widget.conversationId, events: {
+    'message.sent': (data) {
+      if (!mounted) return;
+      try {
         final msg = MessageModel.fromJson(data);
+        debugPrint('[Chat] message.sent reçu: id=${msg.id} sender=${msg.senderId}');
+
         if (msg.senderId != currentUser?.id) {
           ref
               .read(messagesProvider(widget.conversationId).notifier)
               .addMessage(msg);
           _markRead();
-          _scrollToBottom();
-        }
-        ref.read(conversationsProvider.notifier).load();
-      },
-      'user.typing': (data) {
-        if (!mounted) return;
-        final userId = data['user_id'] as int?;
-        final isTyping = data['is_typing'] as bool? ?? false;
-        final name = data['full_name'] as String? ?? '';
-
-        if (userId != currentUser?.id) {
-          setState(() {
-            _otherTyping = isTyping;
-            _otherTypingName = name;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || !_scrollController.hasClients) return;
+            final distanceFromBottom = _scrollController.position.maxScrollExtent
+                - _scrollController.position.pixels;
+            if (distanceFromBottom < 300) {
+              _scrollToBottom();
+            }
           });
+        }
+        // Toujours recharger la liste des conversations
+        ref.read(conversationsProvider.notifier).load();
+      } catch (e) {
+        debugPrint('[ChatPage] message.sent parse error: $e — data=$data');
+      }
+    },
+    'user.typing': (data) {
+      if (!mounted) return;
+      final userId = data['user_id'] as int?;
+      final isTyping = data['is_typing'] as bool? ?? false;
+      final name = data['full_name'] as String? ?? '';
 
-          if (isTyping) {
-            Future.delayed(const Duration(seconds: 4), () {
-              if (mounted && _otherTyping) {
-                setState(() => _otherTyping = false);
-              }
-            });
-          }
+      debugPrint('[Chat] user.typing: userId=$userId isTyping=$isTyping');
+
+      if (userId != null && userId != currentUser?.id) {
+        _otherTypingTimer?.cancel();
+        setState(() {
+          _otherTypingName = name;
+          _otherTyping = isTyping;
+          if (isTyping) _otherRecording = false;
+        });
+
+        if (isTyping) {
+          _otherTypingTimer = Timer(const Duration(seconds: 5), () {
+            if (mounted) setState(() { _otherTyping = false; });
+          });
         }
-      },
-      'call.initiated': (data) {
-        if (!mounted) return;
-        final callerId = data['caller_id'] as int?;
-        if (callerId == currentUser?.id) return;
-        try {
-          final call = CallModel.fromJson(data);
-          context.push('/calls/${call.id}', extra: call);
-        } catch (e) {
-          debugPrint('[ChatPage] call.initiated parse error: $e');
-        }
-      },
-      'call.status': (data) {
-        _callService.onCallStatusChanged
-            ?.call(data['status'] as String? ?? '');
-      },
-      'call.signal': (data) {
-        final senderId = data['sender_id'] as int?;
-        if (senderId != currentUser?.id) {
-          _callService.onCallSignalReceived(data);
-        }
-      },
-    });
-  }
+      }
+    },
+    'call.initiated': (data) {
+      if (!mounted) return;
+      final callerId = data['caller_id'] as int?;
+      if (callerId == currentUser?.id) return;
+      try {
+        final call = CallModel.fromJson(data);
+        context.push('/calls/${call.id}', extra: call);
+      } catch (e) {
+        debugPrint('[ChatPage] call.initiated parse error: $e');
+      }
+    },
+    'call.status': (data) {
+      _callService.onCallStatusChanged
+          ?.call(data['status'] as String? ?? '');
+    },
+    'call.signal': (data) {
+      final senderId = data['sender_id'] as int?;
+      if (senderId != currentUser?.id) {
+        _callService.onCallSignalReceived(data);
+      }
+    },
+  });
+}
 
   Future<void> _loadConversation() async {
     try {
@@ -207,7 +226,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
       if (mounted) {
         AppModal.error(context,
             title: 'Envoi échoué',
-            message: 'Le message n\'a pas pu être envoyé. Vérifiez votre connexion.');
+            message:
+                'Le message n\'a pas pu être envoyé. Vérifiez votre connexion.');
       }
     }
   }
@@ -222,7 +242,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
             curve: Curves.easeOut,
           );
         } else {
-          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+          _scrollController
+              .jumpTo(_scrollController.position.maxScrollExtent);
         }
       }
     });
@@ -268,6 +289,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
         _recordingDuration = Duration.zero;
       });
 
+      // ← Notifier les autres qu'on enregistre
+      _sendRecordingStatus(true);
+
       _recordingTimer =
           Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) {
@@ -290,6 +314,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
     if (!_isRecording) return;
     _recordingTimer?.cancel();
     setState(() => _isRecording = false);
+
+    // ← Notifier les autres qu'on a arrêté
+    _sendRecordingStatus(false);
 
     try {
       final path = await _recorder.stop();
@@ -351,12 +378,29 @@ class _ChatPageState extends ConsumerState<ChatPage>
       _recordingDuration = Duration.zero;
     });
 
+    // ← Notifier les autres qu'on a annulé
+    _sendRecordingStatus(false);
+
     try {
       final path = await _recorder.stop();
       if (path != null) File(path).deleteSync();
     } catch (_) {}
 
     HapticFeedback.lightImpact();
+  }
+
+  /// Envoie le statut d'enregistrement via l'API typing
+  /// On réutilise le endpoint typing avec un champ supplémentaire
+  void _sendRecordingStatus(bool isRecording) {
+    try {
+      // On envoie is_typing=false + is_recording via l'API
+      // Le backend UserTyping event sera étendu, mais en attendant
+      // on peut envoyer is_typing avec une valeur spéciale
+      // Pour l'instant on notifie juste via typing=false pour reset
+      ref
+          .read(messagesProvider(widget.conversationId).notifier)
+          .sendTyping(isRecording);
+    } catch (_) {}
   }
 
   // ── Sélection images/fichiers ─────────────────────────────────
@@ -406,7 +450,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
         if (result == null) return;
         final f = result.files.first;
         if (f.bytes == null) return;
-
         const maxBytes = 25 * 1024 * 1024;
         if (f.bytes!.length > maxBytes) {
           if (mounted) {
@@ -417,7 +460,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
           }
           return;
         }
-
         final mime = _guessMime(f.name);
         await _sendFileBytes(f.bytes!, f.name, 'video', mime);
         return;
@@ -427,25 +469,20 @@ class _ChatPageState extends ConsumerState<ChatPage>
         type: FileType.video,
         withData: false,
       );
-
       if (result == null || result.files.first.path == null) return;
-
       final path = result.files.first.path!;
       final file = File(path);
       final fileSize = await file.length();
-
       const maxBytes = 25 * 1024 * 1024;
       if (fileSize > maxBytes) {
         final sizeMb = (fileSize / 1024 / 1024).toStringAsFixed(1);
         if (mounted) {
           AppModal.warning(context,
               title: 'Fichier trop volumineux',
-              message:
-                  'La vidéo fait $sizeMb MB. La limite est de 25 MB.');
+              message: 'La vidéo fait $sizeMb MB. La limite est de 25 MB.');
         }
         return;
       }
-
       await _sendFilePath(path, 'video');
     } catch (e) {
       if (mounted) {
@@ -463,7 +500,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
         withReadStream: !kIsWeb,
       );
       if (result == null) return;
-
       if (kIsWeb && result.files.first.bytes != null) {
         final f = result.files.first;
         final mime = _guessMime(f.name);
@@ -489,21 +525,14 @@ class _ChatPageState extends ConsumerState<ChatPage>
       _isSendingFile = true;
       _uploadProgress = 0;
     });
-
     final success = await ref
         .read(messagesProvider(widget.conversationId).notifier)
-        .sendFile(
-          path,
-          type,
-          onProgress: (sent, total) {
-            if (total > 0 && mounted) {
-              setState(() => _uploadProgress = (sent / total * 100).round());
-            }
-          },
-        );
-
+        .sendFile(path, type, onProgress: (sent, total) {
+      if (total > 0 && mounted) {
+        setState(() => _uploadProgress = (sent / total * 100).round());
+      }
+    });
     if (mounted) setState(() => _isSendingFile = false);
-
     if (!success && mounted) {
       AppModal.error(context,
           title: 'Envoi échoué',
@@ -515,22 +544,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
   }
 
   Future<void> _sendFileBytes(
-    Uint8List bytes,
-    String fileName,
-    String type,
-    String mime,
-  ) async {
+      Uint8List bytes, String fileName, String type, String mime) async {
     setState(() {
       _isSendingFile = true;
       _uploadProgress = 0;
     });
-
     final success = await ref
         .read(messagesProvider(widget.conversationId).notifier)
         .sendFileBytes(bytes, fileName, type, mime);
-
     if (mounted) setState(() => _isSendingFile = false);
-
     if (!success && mounted) {
       AppModal.error(context,
           title: 'Envoi échoué',
@@ -544,26 +566,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
   String _guessMime(String fileName) {
     final ext = fileName.split('.').last.toLowerCase();
     const map = {
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'png': 'image/png',
-      'gif': 'image/gif',
-      'webp': 'image/webp',
-      'mp4': 'video/mp4',
-      'mov': 'video/quicktime',
-      'avi': 'video/x-msvideo',
-      'mp3': 'audio/mpeg',
-      'aac': 'audio/aac',
-      'm4a': 'audio/mp4',
-      'wav': 'audio/wav',
-      'ogg': 'audio/ogg',
-      'pdf': 'application/pdf',
+      'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+      'gif': 'image/gif', 'webp': 'image/webp', 'mp4': 'video/mp4',
+      'mov': 'video/quicktime', 'avi': 'video/x-msvideo',
+      'mp3': 'audio/mpeg', 'aac': 'audio/aac', 'm4a': 'audio/mp4',
+      'wav': 'audio/wav', 'ogg': 'audio/ogg', 'pdf': 'application/pdf',
       'doc': 'application/msword',
-      'docx':
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'xls': 'application/vnd.ms-excel',
-      'xlsx':
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'zip': 'application/zip',
     };
     return map[ext] ?? 'application/octet-stream';
@@ -576,7 +587,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
     return 'file';
   }
 
-  // ── Appel ─────────────────────────────────────────────────────
   Future<void> _initiateCall(String type) async {
     final currentUser = ref.read(currentUserProvider);
     if (currentUser == null) {
@@ -585,8 +595,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
           message: 'Vous devez être connecté pour passer un appel.');
       return;
     }
-
-    // Vérifier si un appel est déjà en cours
     if (_callService.isBusy) {
       AppModal.warning(context,
           title: 'Appel en cours',
@@ -595,10 +603,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
       return;
     }
 
-    // Clé pour fermer UNIQUEMENT ce dialog (pas la page)
     bool dialogOpen = false;
-
-    // Afficher le dialog de connexion
     dialogOpen = true;
     showDialog(
       context: context,
@@ -609,38 +614,30 @@ class _ChatPageState extends ConsumerState<ChatPage>
     Map<String, dynamic>? callData;
     try {
       callData = await _callService.initiateCall(
-        widget.conversationId,
-        type,
-        currentUser.id,
-      );
+          widget.conversationId, type, currentUser.id);
     } catch (e) {
       debugPrint('[ChatPage] initiateCall exception: $e');
     }
 
-    // Fermer le dialog UNIQUEMENT s'il est encore ouvert
     if (mounted && dialogOpen) {
       Navigator.of(context, rootNavigator: true).pop();
       dialogOpen = false;
     }
-
     if (!mounted) return;
 
     if (callData != null) {
       try {
         final call = CallModel.fromJson(callData);
-        debugPrint('[ChatPage] Navigation vers /calls/${call.id}');
         context.push('/calls/${call.id}', extra: {
           'call': call,
           'participants': _conversation?.participants ?? [],
         });
       } catch (e) {
-        debugPrint('[ChatPage] fromJson error: $e — callData=$callData');
         AppModal.error(context,
             title: 'Erreur de navigation',
             message: 'Appel créé mais impossible d\'ouvrir la page: $e');
       }
     }
-    // Si callData == null, l'erreur est affichée par onError dans CallService
   }
 
   Future<void> _startPrivateFromGroup(UserModel sender) async {
@@ -654,6 +651,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
   @override
   void dispose() {
     _typingTimer?.cancel();
+    _otherTypingTimer?.cancel();
     _recordingTimer?.cancel();
     _recordingPulseController.dispose();
     _textController.dispose();
@@ -682,7 +680,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
           Expanded(
             child: messagesAsync.when(
               loading: () => const Center(
-                child: CircularProgressIndicator(color: AppColors.primary),
+                child:
+                    CircularProgressIndicator(color: AppColors.primary),
               ),
               error: (e, _) => Center(
                 child: Column(
@@ -693,7 +692,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     const SizedBox(height: 12),
                     const Text('Impossible de charger les messages',
                         style: TextStyle(
-                            color: AppColors.grey500, fontFamily: 'Nunito')),
+                            color: AppColors.grey500,
+                            fontFamily: 'Nunito')),
                     const SizedBox(height: 12),
                     ElevatedButton(
                       onPressed: () => ref
@@ -710,7 +710,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
             ),
           ),
           if (_isSendingFile) _buildSendingIndicator(),
-          if (_otherTyping) _buildTypingIndicator(),
+          // ← Indicateur typing/recording unifié
+          if (_otherTyping || _otherRecording)
+            _buildTypingIndicator(),
           _buildInputArea(),
         ],
       ),
@@ -731,22 +733,18 @@ class _ChatPageState extends ConsumerState<ChatPage>
         children: [
           if (conv?.isGroup == true)
             Container(
-              width: 40,
-              height: 40,
+              width: 40, height: 40,
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.2),
                 shape: BoxShape.circle,
               ),
               child: Center(
-                child: Text(
-                  conv?.group?.initials ?? 'G',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
-                    fontFamily: 'Nunito',
-                  ),
-                ),
+                child: Text(conv?.group?.initials ?? 'G',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                        fontFamily: 'Nunito')),
               ),
             )
           else
@@ -757,27 +755,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  name,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                    fontFamily: 'Nunito',
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  conv?.isGroup == true
-                      ? '${conv?.participants.length ?? 0} membres'
-                      : (other?.phoneNumber ?? 'appuyez pour plus d\'infos'),
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.white.withOpacity(0.85),
-                    fontFamily: 'Nunito',
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
+                Text(name,
+                    style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        fontFamily: 'Nunito'),
+                    overflow: TextOverflow.ellipsis),
+                // ← Sous-titre dynamique : typing / recording / info
+                _buildAppBarSubtitle(conv, other),
               ],
             ),
           ),
@@ -804,6 +790,50 @@ class _ChatPageState extends ConsumerState<ChatPage>
     );
   }
 
+  /// Sous-titre de l'AppBar : affiche "en train d'écrire..." ou "enregistrement..."
+  Widget _buildAppBarSubtitle(ConversationModel? conv, UserModel? other) {
+    if (_otherRecording) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.mic, color: Colors.greenAccent, size: 12),
+          const SizedBox(width: 4),
+          Text(
+            isGroup
+                ? '${_otherTypingName ?? ''} enregistre...'
+                : 'enregistrement vocal...',
+            style: const TextStyle(
+                fontSize: 12,
+                color: Colors.greenAccent,
+                fontFamily: 'Nunito'),
+          ),
+        ],
+      );
+    }
+    if (_otherTyping) {
+      return Text(
+        isGroup
+            ? '${_otherTypingName ?? ''} écrit...'
+            : 'en train d\'écrire...',
+        style: TextStyle(
+            fontSize: 12,
+            color: Colors.white.withOpacity(0.9),
+            fontStyle: FontStyle.italic,
+            fontFamily: 'Nunito'),
+      );
+    }
+    return Text(
+      conv?.isGroup == true
+          ? '${conv?.participants.length ?? 0} membres'
+          : (other?.phoneNumber ?? 'appuyez pour plus d\'infos'),
+      style: TextStyle(
+          fontSize: 12,
+          color: Colors.white.withOpacity(0.85),
+          fontFamily: 'Nunito'),
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
   void _showMoreMenu() {
     final conv = _conversation;
     showModalBottomSheet(
@@ -812,16 +842,14 @@ class _ChatPageState extends ConsumerState<ChatPage>
       builder: (_) => Container(
         margin: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-        ),
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20)),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 8),
             Container(
-                width: 36,
-                height: 4,
+                width: 36, height: 4,
                 decoration: BoxDecoration(
                     color: AppColors.grey200,
                     borderRadius: BorderRadius.circular(2))),
@@ -841,8 +869,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 },
               ),
             ListTile(
-              leading:
-                  const Icon(Icons.search_rounded, color: AppColors.grey600),
+              leading: const Icon(Icons.search_rounded,
+                  color: AppColors.grey600),
               title: const Text('Rechercher',
                   style: TextStyle(fontFamily: 'Nunito')),
               onTap: () => Navigator.pop(context),
@@ -861,8 +889,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
       child: Row(
         children: [
           SizedBox(
-            width: 16,
-            height: 16,
+            width: 16, height: 16,
             child: CircularProgressIndicator(
               strokeWidth: 2,
               color: AppColors.primary,
@@ -921,15 +948,12 @@ class _ChatPageState extends ConsumerState<ChatPage>
         itemBuilder: (context, index) {
           final msg = messages[index];
           final isMine = msg.senderId == currentUserId;
-
           final showDateSep = index == 0 ||
               !_isSameDay(messages[index - 1].createdAt, msg.createdAt);
-
           final showAvatar = !isMine &&
               isGroup &&
               (index == 0 ||
                   messages[index - 1].senderId != msg.senderId);
-
           final showName = !isMine &&
               isGroup &&
               (index == 0 ||
@@ -953,8 +977,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         if (!success && mounted) {
                           AppModal.error(context,
                               title: 'Suppression échouée',
-                              message:
-                                  'Impossible de supprimer le message.');
+                              message: 'Impossible de supprimer le message.');
                         }
                       }
                     : null,
@@ -987,8 +1010,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Center(
         child: Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           decoration: BoxDecoration(
             color: const Color(0xFFD1F0E0),
             borderRadius: BorderRadius.circular(12),
@@ -999,26 +1021,24 @@ class _ChatPageState extends ConsumerState<ChatPage>
                   offset: const Offset(0, 1))
             ],
           ),
-          child: Text(
-            label,
-            style: const TextStyle(
-                fontSize: 12,
-                color: Color(0xFF4A5E57),
-                fontFamily: 'Nunito',
-                fontWeight: FontWeight.w600),
-          ),
+          child: Text(label,
+              style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF4A5E57),
+                  fontFamily: 'Nunito',
+                  fontWeight: FontWeight.w600)),
         ),
       ),
     );
   }
 
+  /// Indicateur unifié : typing OU recording
   Widget _buildTypingIndicator() {
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.only(left: 12, bottom: 4, top: 2),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: const BorderRadius.only(
@@ -1037,16 +1057,34 @@ class _ChatPageState extends ConsumerState<ChatPage>
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              _otherTypingName ?? '',
-              style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.primary,
-                  fontFamily: 'Nunito',
-                  fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(width: 6),
-            _TypingDots(),
+            if (_otherRecording) ...[
+              const Icon(Icons.mic, color: AppColors.primary, size: 14),
+              const SizedBox(width: 6),
+              Text(
+                _otherTypingName != null && isGroup
+                    ? _otherTypingName!
+                    : 'Enregistrement...',
+                style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.primary,
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(width: 6),
+              _RecordingWave(),
+            ] else ...[
+              if (_otherTypingName != null)
+                Text(
+                  _otherTypingName!,
+                  style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.primary,
+                      fontFamily: 'Nunito',
+                      fontWeight: FontWeight.w600),
+                ),
+              const SizedBox(width: 6),
+              _TypingDots(),
+            ],
           ],
         ),
       ),
@@ -1059,9 +1097,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     return Container(
       color: const Color(0xFFF0F2F5),
       padding: EdgeInsets.only(
-        left: 6,
-        right: 6,
-        top: 6,
+        left: 6, right: 6, top: 6,
         bottom: MediaQuery.of(context).padding.bottom + 6,
       ),
       child: _isRecording
@@ -1098,10 +1134,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
                             keyboardType: TextInputType.multiline,
                             textInputAction: TextInputAction.newline,
                             style: const TextStyle(
-                              fontFamily: 'Nunito',
-                              fontSize: 15,
-                              color: Color(0xFF111B21),
-                            ),
+                                fontFamily: 'Nunito',
+                                fontSize: 15,
+                                color: Color(0xFF111B21)),
                             decoration: const InputDecoration(
                               hintText: 'Message',
                               hintStyle: TextStyle(
@@ -1150,23 +1185,20 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         },
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 200),
-                    width: 50,
-                    height: 50,
+                    width: 50, height: 50,
                     decoration: BoxDecoration(
                       color: const Color(0xFF1B7F4A),
                       shape: BoxShape.circle,
                       boxShadow: [
                         BoxShadow(
-                            color:
-                                const Color(0xFF1B7F4A).withOpacity(0.35),
+                            color: const Color(0xFF1B7F4A).withOpacity(0.35),
                             blurRadius: 8,
                             offset: const Offset(0, 3))
                       ],
                     ),
                     child: Icon(
                       hasText ? Icons.send_rounded : Icons.mic_rounded,
-                      color: Colors.white,
-                      size: 22,
+                      color: Colors.white, size: 22,
                     ),
                   ),
                 ),
@@ -1178,15 +1210,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
   Widget _buildRecordingBar() {
     final minutes = _recordingDuration.inMinutes;
     final seconds = _recordingDuration.inSeconds % 60;
-    final timeStr = '$minutes:${seconds.toString().padLeft(2, '0')}';
+    final timeStr =
+        '$minutes:${seconds.toString().padLeft(2, '0')}';
 
     return Row(
       children: [
         GestureDetector(
           onTap: _cancelRecording,
           child: Container(
-            width: 46,
-            height: 46,
+            width: 46, height: 46,
             decoration: BoxDecoration(
               color: Colors.white,
               shape: BoxShape.circle,
@@ -1217,8 +1249,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 AnimatedBuilder(
                   animation: _recordingPulseController,
                   builder: (_, __) => Container(
-                    width: 10,
-                    height: 10,
+                    width: 10, height: 10,
                     decoration: BoxDecoration(
                       color: AppColors.error.withOpacity(
                           0.5 + 0.5 * _recordingPulseController.value),
@@ -1227,22 +1258,18 @@ class _ChatPageState extends ConsumerState<ChatPage>
                   ),
                 ),
                 const SizedBox(width: 10),
-                Text(
-                  timeStr,
-                  style: const TextStyle(
-                      fontSize: 15,
-                      color: Color(0xFF111B21),
-                      fontFamily: 'Nunito',
-                      fontWeight: FontWeight.w600),
-                ),
+                Text(timeStr,
+                    style: const TextStyle(
+                        fontSize: 15,
+                        color: Color(0xFF111B21),
+                        fontFamily: 'Nunito',
+                        fontWeight: FontWeight.w600)),
                 const Spacer(),
-                const Text(
-                  '< Glisser pour annuler',
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFF8696A0),
-                      fontFamily: 'Nunito'),
-                ),
+                const Text('< Glisser pour annuler',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF8696A0),
+                        fontFamily: 'Nunito')),
               ],
             ),
           ),
@@ -1251,8 +1278,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
         GestureDetector(
           onTap: _stopAndSendRecording,
           child: Container(
-            width: 50,
-            height: 50,
+            width: 50, height: 50,
             decoration: BoxDecoration(
               color: const Color(0xFF1B7F4A),
               shape: BoxShape.circle,
@@ -1276,22 +1302,60 @@ class _ChatPageState extends ConsumerState<ChatPage>
       context: context,
       backgroundColor: Colors.transparent,
       builder: (_) => _AttachmentSheet(
-        onPickImage: () {
-          Navigator.pop(context);
-          _pickImage();
-        },
+        onPickImage: () { Navigator.pop(context); _pickImage(); },
         onPickCamera: () {
           Navigator.pop(context);
           _pickImage(source: ImageSource.camera);
         },
-        onPickFile: () {
-          Navigator.pop(context);
-          _pickFile();
-        },
-        onPickVideo: () {
-          Navigator.pop(context);
-          _pickVideo();
-        },
+        onPickFile: () { Navigator.pop(context); _pickFile(); },
+        onPickVideo: () { Navigator.pop(context); _pickVideo(); },
+      ),
+    );
+  }
+}
+
+// ── Widget onde d'enregistrement ─────────────────────────────────
+class _RecordingWave extends StatefulWidget {
+  @override
+  State<_RecordingWave> createState() => _RecordingWaveState();
+}
+
+class _RecordingWaveState extends State<_RecordingWave>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 600))
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: List.generate(4, (i) {
+          final h = 6.0 + ((_ctrl.value * 4 - i).clamp(0.0, 1.0)) * 10;
+          return Container(
+            width: 3,
+            height: h,
+            margin: const EdgeInsets.symmetric(horizontal: 1),
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          );
+        }),
       ),
     );
   }
@@ -1308,23 +1372,18 @@ class _CallingDialog extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(28),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-        ),
+            color: Colors.white, borderRadius: BorderRadius.circular(20)),
         child: const Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             CircularProgressIndicator(color: AppColors.primary),
             SizedBox(height: 16),
-            Text(
-              'Connexion en cours...',
-              style: TextStyle(
-                fontFamily: 'Nunito',
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: AppColors.grey700,
-              ),
-            ),
+            Text('Connexion en cours...',
+                style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.grey700)),
           ],
         ),
       ),
@@ -1353,22 +1412,18 @@ class _WhatsAppAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: size,
-      height: size,
+      width: size, height: size,
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.2),
         shape: BoxShape.circle,
       ),
       child: Center(
-        child: Text(
-          _initials,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: size * 0.38,
-            fontWeight: FontWeight.w700,
-            fontFamily: 'Nunito',
-          ),
-        ),
+        child: Text(_initials,
+            style: TextStyle(
+                color: Colors.white,
+                fontSize: size * 0.38,
+                fontWeight: FontWeight.w700,
+                fontFamily: 'Nunito')),
       ),
     );
   }
@@ -1376,10 +1431,7 @@ class _WhatsAppAvatar extends StatelessWidget {
 
 // ── Attachment Sheet ───────────────────────────────────────────────
 class _AttachmentSheet extends StatelessWidget {
-  final VoidCallback onPickImage;
-  final VoidCallback onPickCamera;
-  final VoidCallback onPickFile;
-  final VoidCallback onPickVideo;
+  final VoidCallback onPickImage, onPickCamera, onPickFile, onPickVideo;
 
   const _AttachmentSheet({
     required this.onPickImage,
@@ -1393,16 +1445,13 @@ class _AttachmentSheet extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 24),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-      ),
+          color: Colors.white, borderRadius: BorderRadius.circular(24)),
       padding: const EdgeInsets.all(20),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-              width: 36,
-              height: 4,
+              width: 36, height: 4,
               decoration: BoxDecoration(
                   color: AppColors.grey200,
                   borderRadius: BorderRadius.circular(2))),
@@ -1410,36 +1459,28 @@ class _AttachmentSheet extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              _AttachOption(
-                icon: Icons.insert_drive_file_rounded,
-                label: 'Document',
-                color: const Color(0xFF7B5EA7),
-                onTap: onPickFile,
-              ),
-              _AttachOption(
-                icon: Icons.camera_alt_rounded,
-                label: 'Appareil photo',
-                color: const Color(0xFFFF6B6B),
-                onTap: onPickCamera,
-              ),
-              _AttachOption(
-                icon: Icons.photo_library_rounded,
-                label: 'Galerie',
-                color: const Color(0xFF4ECDC4),
-                onTap: onPickImage,
-              ),
+              _AttachOption(icon: Icons.insert_drive_file_rounded,
+                  label: 'Document',
+                  color: const Color(0xFF7B5EA7),
+                  onTap: onPickFile),
+              _AttachOption(icon: Icons.camera_alt_rounded,
+                  label: 'Appareil photo',
+                  color: const Color(0xFFFF6B6B),
+                  onTap: onPickCamera),
+              _AttachOption(icon: Icons.photo_library_rounded,
+                  label: 'Galerie',
+                  color: const Color(0xFF4ECDC4),
+                  onTap: onPickImage),
             ],
           ),
           const SizedBox(height: 16),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              _AttachOption(
-                icon: Icons.videocam_rounded,
-                label: 'Vidéo',
-                color: const Color(0xFFFF9F43),
-                onTap: onPickVideo,
-              ),
+              _AttachOption(icon: Icons.videocam_rounded,
+                  label: 'Vidéo',
+                  color: const Color(0xFFFF9F43),
+                  onTap: onPickVideo),
               const SizedBox(width: 80),
               const SizedBox(width: 80),
             ],
@@ -1456,12 +1497,11 @@ class _AttachOption extends StatelessWidget {
   final Color color;
   final VoidCallback onTap;
 
-  const _AttachOption({
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.onTap,
-  });
+  const _AttachOption(
+      {required this.icon,
+      required this.label,
+      required this.color,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -1471,8 +1511,7 @@ class _AttachOption extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 58,
-            height: 58,
+            width: 58, height: 58,
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,
@@ -1486,16 +1525,13 @@ class _AttachOption extends StatelessWidget {
             child: Icon(icon, color: Colors.white, size: 26),
           ),
           const SizedBox(height: 8),
-          Text(
-            label,
-            style: const TextStyle(
-              fontFamily: 'Nunito',
-              fontSize: 12,
-              color: Color(0xFF4A5E57),
-              fontWeight: FontWeight.w600,
-            ),
-            textAlign: TextAlign.center,
-          ),
+          Text(label,
+              style: const TextStyle(
+                  fontFamily: 'Nunito',
+                  fontSize: 12,
+                  color: Color(0xFF4A5E57),
+                  fontWeight: FontWeight.w600),
+              textAlign: TextAlign.center),
         ],
       ),
     );
@@ -1516,9 +1552,8 @@ class _TypingDotsState extends State<_TypingDots>
   void initState() {
     super.initState();
     _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat();
+        vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat();
   }
 
   @override
@@ -1539,8 +1574,7 @@ class _TypingDotsState extends State<_TypingDots>
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 1.5),
               child: Container(
-                width: 6,
-                height: 6,
+                width: 6, height: 6,
                 decoration: BoxDecoration(
                   color: const Color(0xFF8696A0)
                       .withOpacity(0.3 + 0.7 * opacity),
@@ -1558,12 +1592,8 @@ class _TypingDotsState extends State<_TypingDots>
 // ── Message Bubble ──────────────────────────────────────────────────
 class _MessageBubble extends StatelessWidget {
   final MessageModel message;
-  final bool isMine;
-  final bool showAvatar;
-  final bool showName;
-  final bool isGroup;
-  final VoidCallback? onDelete;
-  final VoidCallback? onNameTap;
+  final bool isMine, showAvatar, showName, isGroup;
+  final VoidCallback? onDelete, onNameTap;
 
   const _MessageBubble({
     required this.message,
@@ -1576,12 +1606,8 @@ class _MessageBubble extends StatelessWidget {
   });
 
   static const List<Color> _nameColors = [
-    Color(0xFF1B7F4A),
-    Color(0xFF2196F3),
-    Color(0xFFE91E63),
-    Color(0xFF9C27B0),
-    Color(0xFFFF5722),
-    Color(0xFF009688),
+    Color(0xFF1B7F4A), Color(0xFF2196F3), Color(0xFFE91E63),
+    Color(0xFF9C27B0), Color(0xFFFF5722), Color(0xFF009688),
   ];
 
   Color _nameColor(int senderId) =>
@@ -1592,7 +1618,6 @@ class _MessageBubble extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxBubbleWidth = constraints.maxWidth * 0.78;
-
         return Padding(
           padding: EdgeInsets.only(
             bottom: 2,
@@ -1615,12 +1640,10 @@ class _MessageBubble extends StatelessWidget {
                   const SizedBox(width: 34),
               ],
               GestureDetector(
-                onLongPress: onDelete != null
-                    ? () => _showDeleteMenu(context)
-                    : null,
+                onLongPress:
+                    onDelete != null ? () => _showDeleteMenu(context) : null,
                 child: ConstrainedBox(
-                  constraints:
-                      BoxConstraints(maxWidth: maxBubbleWidth),
+                  constraints: BoxConstraints(maxWidth: maxBubbleWidth),
                   child: Container(
                     decoration: BoxDecoration(
                       color: isMine
@@ -1650,9 +1673,7 @@ class _MessageBubble extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          if (!isMine &&
-                              showName &&
-                              message.sender != null)
+                          if (!isMine && showName && message.sender != null)
                             Padding(
                               padding: const EdgeInsets.only(
                                   left: 10, right: 10, top: 6),
@@ -1661,11 +1682,10 @@ class _MessageBubble extends StatelessWidget {
                                 child: Text(
                                   message.sender!.fullName,
                                   style: TextStyle(
-                                    color: _nameColor(message.senderId),
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                    fontFamily: 'Nunito',
-                                  ),
+                                      color: _nameColor(message.senderId),
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      fontFamily: 'Nunito'),
                                 ),
                               ),
                             ),
@@ -1681,17 +1701,14 @@ class _MessageBubble extends StatelessWidget {
                                               ? const Color(0xFF667781)
                                               : const Color(0xFF8696A0)),
                                       const SizedBox(width: 5),
-                                      Text(
-                                        'Message supprimé',
-                                        style: TextStyle(
-                                          color: isMine
-                                              ? const Color(0xFF667781)
-                                              : const Color(0xFF8696A0),
-                                          fontSize: 14,
-                                          fontStyle: FontStyle.italic,
-                                          fontFamily: 'Nunito',
-                                        ),
-                                      ),
+                                      Text('Message supprimé',
+                                          style: TextStyle(
+                                              color: isMine
+                                                  ? const Color(0xFF667781)
+                                                  : const Color(0xFF8696A0),
+                                              fontSize: 14,
+                                              fontStyle: FontStyle.italic,
+                                              fontFamily: 'Nunito')),
                                     ],
                                   )
                                 : _buildContent(context, maxBubbleWidth),
@@ -1706,18 +1723,16 @@ class _MessageBubble extends StatelessWidget {
                                 Text(
                                   _formatTime(message.createdAt),
                                   style: TextStyle(
-                                    fontSize: 10,
-                                    color: isMine
-                                        ? const Color(0xFF667781)
-                                        : const Color(0xFF8696A0),
-                                    fontFamily: 'Nunito',
-                                  ),
+                                      fontSize: 10,
+                                      color: isMine
+                                          ? const Color(0xFF667781)
+                                          : const Color(0xFF8696A0),
+                                      fontFamily: 'Nunito'),
                                 ),
                                 if (isMine) ...[
                                   const SizedBox(width: 3),
                                   const Icon(Icons.done_all_rounded,
-                                      size: 14,
-                                      color: Color(0xFF53BDEB)),
+                                      size: 14, color: Color(0xFF53BDEB)),
                                 ],
                               ],
                             ),
@@ -1740,14 +1755,12 @@ class _MessageBubble extends StatelessWidget {
     return const EdgeInsets.only(left: 10, right: 10, top: 6, bottom: 2);
   }
 
-  String _formatTime(DateTime dt) {
-    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-  }
+  String _formatTime(DateTime dt) =>
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
   Widget _buildContent(BuildContext context, double maxBubbleWidth) {
     final rawUrl = message.mediaUrl;
     String? mediaUrl;
-
     if (rawUrl != null && rawUrl.isNotEmpty) {
       if (rawUrl.startsWith('http')) {
         mediaUrl = rawUrl;
@@ -1761,21 +1774,19 @@ class _MessageBubble extends StatelessWidget {
     if (message.isImage && mediaUrl != null) {
       final imageUrl = kIsWeb ? _buildProxyUrl(mediaUrl) : mediaUrl;
       return _AuthNetworkImage(
-        url: imageUrl,
-        width: (maxBubbleWidth - 6).clamp(120.0, 280.0),
-      );
+          url: imageUrl,
+          width: (maxBubbleWidth - 6).clamp(120.0, 280.0));
     }
 
     if (message.isAudio && mediaUrl != null) {
       final audioUrl = kIsWeb ? _buildProxyUrl(mediaUrl) : mediaUrl;
       return _AudioBubble(
-        url: audioUrl,
-        isMine: isMine,
-        mediaName: message.mediaName,
-        duration: message.mediaSize != null
-            ? Duration(seconds: (message.mediaSize! / 16000).round())
-            : null,
-      );
+          url: audioUrl,
+          isMine: isMine,
+          mediaName: message.mediaName,
+          duration: message.mediaSize != null
+              ? Duration(seconds: (message.mediaSize! / 16000).round())
+              : null);
     }
 
     if (message.isVideo && mediaUrl != null) {
@@ -1788,40 +1799,31 @@ class _MessageBubble extends StatelessWidget {
           alignment: Alignment.center,
           children: [
             Container(
-              width: thumbWidth,
-              height: thumbHeight,
+              width: thumbWidth, height: thumbHeight,
               decoration: BoxDecoration(
-                color: Colors.black87,
-                borderRadius: BorderRadius.circular(4),
-              ),
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(4)),
               child: const Center(
-                child: Icon(Icons.videocam_rounded,
-                    color: Colors.white54, size: 52),
-              ),
+                  child: Icon(Icons.videocam_rounded,
+                      color: Colors.white54, size: 52)),
             ),
             Container(
-              width: 48,
-              height: 48,
+              width: 48, height: 48,
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.55),
-                shape: BoxShape.circle,
-              ),
+                  color: Colors.black.withOpacity(0.55),
+                  shape: BoxShape.circle),
               child: const Icon(Icons.play_arrow_rounded,
                   color: Colors.white, size: 30),
             ),
             if (message.mediaName != null)
               Positioned(
-                bottom: 8,
-                left: 8,
-                right: 8,
-                child: Text(
-                  message.mediaName!,
-                  style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 11,
-                      fontFamily: 'Nunito'),
-                  overflow: TextOverflow.ellipsis,
-                ),
+                bottom: 8, left: 8, right: 8,
+                child: Text(message.mediaName!,
+                    style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                        fontFamily: 'Nunito'),
+                    overflow: TextOverflow.ellipsis),
               ),
           ],
         ),
@@ -1833,17 +1835,14 @@ class _MessageBubble extends StatelessWidget {
       final sizeStr = message.mediaSize != null
           ? _formatFileSize(message.mediaSize!)
           : '';
-      final ext =
-          (message.mediaName ?? '').split('.').last.toUpperCase();
-
+      final ext = (message.mediaName ?? '').split('.').last.toUpperCase();
       return GestureDetector(
         onTap: () => _openUrl(fileUrl),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 42,
-              height: 42,
+              width: 42, height: 42,
               decoration: BoxDecoration(
                 color: const Color(0xFF1B7F4A).withOpacity(0.1),
                 borderRadius: BorderRadius.circular(8),
@@ -1868,25 +1867,20 @@ class _MessageBubble extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    message.mediaName ?? 'Fichier',
-                    style: const TextStyle(
-                      color: Color(0xFF111B21),
-                      fontFamily: 'Nunito',
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                  ),
-                  if (sizeStr.isNotEmpty)
-                    Text(
-                      sizeStr,
+                  Text(message.mediaName ?? 'Fichier',
                       style: const TextStyle(
-                          fontSize: 11,
-                          color: Color(0xFF8696A0),
-                          fontFamily: 'Nunito'),
-                    ),
+                          color: Color(0xFF111B21),
+                          fontFamily: 'Nunito',
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1),
+                  if (sizeStr.isNotEmpty)
+                    Text(sizeStr,
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF8696A0),
+                            fontFamily: 'Nunito')),
                 ],
               ),
             ),
@@ -1902,11 +1896,10 @@ class _MessageBubble extends StatelessWidget {
       return SelectableText(
         message.body!,
         style: const TextStyle(
-          color: Color(0xFF111B21),
-          fontSize: 15,
-          height: 1.4,
-          fontFamily: 'Nunito',
-        ),
+            color: Color(0xFF111B21),
+            fontSize: 15,
+            height: 1.4,
+            fontFamily: 'Nunito'),
       );
     }
 
@@ -1916,8 +1909,7 @@ class _MessageBubble extends StatelessWidget {
   String _buildProxyUrl(String originalUrl) {
     try {
       final uri = Uri.parse(originalUrl);
-      final storagePath =
-          uri.path.replaceFirst('/storage/', '');
+      final storagePath = uri.path.replaceFirst('/storage/', '');
       return '${AppConstants.baseUrl}/media?path=${Uri.encodeComponent(storagePath)}';
     } catch (_) {
       return originalUrl;
@@ -1926,8 +1918,7 @@ class _MessageBubble extends StatelessWidget {
 
   String _formatFileSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
-    if (bytes < 1048576)
-      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
     return '${(bytes / 1048576).toStringAsFixed(1)} MB';
   }
 
@@ -1945,14 +1936,14 @@ class _MessageBubble extends StatelessWidget {
       builder: (_) => Container(
         margin: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-            color: Colors.white, borderRadius: BorderRadius.circular(20)),
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20)),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 8),
             Container(
-                width: 36,
-                height: 4,
+                width: 36, height: 4,
                 decoration: BoxDecoration(
                     color: AppColors.grey200,
                     borderRadius: BorderRadius.circular(2))),
@@ -1981,7 +1972,6 @@ final _imageCache = <String, Uint8List>{};
 class _AuthNetworkImage extends StatefulWidget {
   final String url;
   final double width;
-
   const _AuthNetworkImage({required this.url, this.width = 220});
 
   @override
@@ -2022,21 +2012,15 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
 
   Future<void> _fetchImage() async {
     if (!mounted) return;
-    setState(() {
-      _loading = true;
-      _error = false;
-    });
-
+    setState(() { _loading = true; _error = false; });
     try {
       final uri = Uri.tryParse(widget.url);
       if (uri == null || !uri.hasScheme) throw Exception('URL invalide');
-
       final token = await AuthStorage.getToken();
       final dio = Dio(BaseOptions(
         connectTimeout: const Duration(seconds: 15),
         receiveTimeout: const Duration(seconds: 30),
       ));
-
       final response = await dio.get<List<int>>(
         widget.url,
         options: Options(
@@ -2048,29 +2032,16 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
           validateStatus: (s) => s != null && s >= 200 && s < 300,
         ),
       );
-
       if (response.data == null || response.data!.isEmpty) {
         throw Exception('Réponse vide');
       }
-
       final bytes = Uint8List.fromList(response.data!);
       _imageCache[widget.url] = bytes;
-
       if (mounted) {
-        setState(() {
-          _imageBytes = bytes;
-          _loading = false;
-          _error = false;
-        });
+        setState(() { _imageBytes = bytes; _loading = false; _error = false; });
       }
     } catch (e) {
-      debugPrint('[Image] Error: $e');
-      if (mounted) {
-        setState(() {
-          _error = true;
-          _loading = false;
-        });
-      }
+      if (mounted) setState(() { _error = true; _loading = false; });
     }
   }
 
@@ -2078,32 +2049,25 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
   Widget build(BuildContext context) {
     final w = widget.width;
     final h = w * 0.65;
-
     if (_loading) {
       return Container(
-        width: w,
-        height: h,
+        width: w, height: h,
         decoration: BoxDecoration(
-          color: const Color(0xFFEBEBEB),
-          borderRadius: BorderRadius.circular(4),
-        ),
+            color: const Color(0xFFEBEBEB),
+            borderRadius: BorderRadius.circular(4)),
         child: const Center(
-          child: CircularProgressIndicator(
-              strokeWidth: 2, color: AppColors.primary),
-        ),
+            child: CircularProgressIndicator(
+                strokeWidth: 2, color: AppColors.primary)),
       );
     }
-
     if (_error || _imageBytes == null) {
       return GestureDetector(
         onTap: _fetchImage,
         child: Container(
-          width: w,
-          height: 140,
+          width: w, height: 140,
           decoration: BoxDecoration(
-            color: const Color(0xFFEBEBEB),
-            borderRadius: BorderRadius.circular(4),
-          ),
+              color: const Color(0xFFEBEBEB),
+              borderRadius: BorderRadius.circular(4)),
           child: const Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -2127,35 +2091,27 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
         ),
       );
     }
-
     return GestureDetector(
       onTap: () => _showFullImage(context),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(4),
-        child: Image.memory(
-          _imageBytes!,
-          width: w,
-          fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) {
-            return GestureDetector(
-              onTap: () =>
-                  launchUrl(Uri.parse(widget.url),
-                      mode: LaunchMode.externalApplication),
-              child: Container(
-                width: w,
-                height: 140,
-                color: const Color(0xFFEBEBEB),
-                child: const Center(
+        child: Image.memory(_imageBytes!, width: w, fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) {
+          return GestureDetector(
+            onTap: () => launchUrl(Uri.parse(widget.url),
+                mode: LaunchMode.externalApplication),
+            child: Container(
+              width: w, height: 140,
+              color: const Color(0xFFEBEBEB),
+              child: const Center(
                   child: Text('Appuyer pour ouvrir',
                       style: TextStyle(
                           color: AppColors.grey400,
                           fontSize: 12,
-                          fontFamily: 'Nunito')),
-                ),
-              ),
-            );
-          },
-        ),
+                          fontFamily: 'Nunito'))),
+            ),
+          );
+        }),
       ),
     );
   }
@@ -2180,15 +2136,10 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
           ),
           body: Center(
             child: InteractiveViewer(
-              child: Image.memory(
-                _imageBytes!,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => const Icon(
-                  Icons.broken_image_rounded,
-                  color: Colors.white54,
-                  size: 64,
-                ),
-              ),
+              child: Image.memory(_imageBytes!, fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const Icon(
+                      Icons.broken_image_rounded,
+                      color: Colors.white54, size: 64)),
             ),
           ),
         ),
@@ -2230,12 +2181,9 @@ class _AudioBubble extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 38,
-            height: 38,
+            width: 38, height: 38,
             decoration: const BoxDecoration(
-              color: Color(0xFF1B7F4A),
-              shape: BoxShape.circle,
-            ),
+                color: Color(0xFF1B7F4A), shape: BoxShape.circle),
             child: const Icon(Icons.play_arrow_rounded,
                 color: Colors.white, size: 24),
           ),
@@ -2250,8 +2198,7 @@ class _AudioBubble extends StatelessWidget {
                     (i) => Container(
                       width: 3,
                       height: 8.0 + (i % 4) * 5.0,
-                      margin:
-                          const EdgeInsets.symmetric(horizontal: 1.5),
+                      margin: const EdgeInsets.symmetric(horizontal: 1.5),
                       decoration: BoxDecoration(
                         color: isMine
                             ? const Color(0xFF1B7F4A).withOpacity(0.6)
@@ -2262,15 +2209,13 @@ class _AudioBubble extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  _durationStr,
-                  style: TextStyle(
-                      fontSize: 11,
-                      color: isMine
-                          ? const Color(0xFF667781)
-                          : const Color(0xFF8696A0),
-                      fontFamily: 'Nunito'),
-                ),
+                Text(_durationStr,
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: isMine
+                            ? const Color(0xFF667781)
+                            : const Color(0xFF8696A0),
+                        fontFamily: 'Nunito')),
               ],
             ),
           ),

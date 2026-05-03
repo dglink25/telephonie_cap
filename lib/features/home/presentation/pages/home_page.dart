@@ -10,6 +10,7 @@ import '../../../../shared/widgets/app_modal.dart';
 import '../../../auth/data/auth_provider.dart';
 import '../../../conversations/data/conversations_provider.dart';
 import '../../../notifications/data/notifications_provider.dart';
+import '../../../notifications/data/notification_listener_provider.dart';
 
 class HomePage extends ConsumerStatefulWidget {
   final Widget child;
@@ -106,7 +107,6 @@ class _HomePageState extends ConsumerState<HomePage> {
         return;
       }
 
-      // Afficher la bannière si pas déjà un appel entrant
       final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
       final convId =
           int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
@@ -198,7 +198,8 @@ class _HomePageState extends ConsumerState<HomePage> {
       if (mounted) {
         AppModal.error(context,
             title: 'Appel indisponible',
-            message: 'L\'appel n\'est plus disponible. Il a peut-être été annulé.');
+            message:
+                'L\'appel n\'est plus disponible. Il a peut-être été annulé.');
       }
     }
   }
@@ -263,7 +264,10 @@ class _HomePageState extends ConsumerState<HomePage> {
     final currentIndex = _locationToIndex(location);
     final isWide = MediaQuery.of(context).size.width > 768;
 
-    // Écouter les nouvelles conversations pour les abonnements WebSocket
+    // Active l'écoute Reverb pour les notifications en temps réel
+    ref.watch(notificationListenerProvider);
+
+    // Écouter les nouvelles conversations pour les abonnements WebSocket appels
     ref.listen(conversationsProvider, (_, next) {
       next.whenData((conversations) {
         for (final conv in conversations) {
@@ -295,10 +299,13 @@ class _HomePageState extends ConsumerState<HomePage> {
       children: [
         layout,
         if (_globalIncomingCall != null)
-          _GlobalIncomingCallBanner(
-            info: _globalIncomingCall!,
-            onAccept: () => _acceptGlobalCall(_globalIncomingCall!),
-            onReject: () => _rejectGlobalCall(_globalIncomingCall!),
+          Positioned(
+            top: 0, left: 0, right: 0,
+            child: _GlobalIncomingCallBanner(
+              info: _globalIncomingCall!,
+              onAccept: () => _acceptGlobalCall(_globalIncomingCall!),
+              onReject: () => _rejectGlobalCall(_globalIncomingCall!),
+            ),
           ),
       ],
     );
@@ -407,7 +414,6 @@ class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
                     ],
                   ),
                 ),
-                // Bouton Refuser
                 GestureDetector(
                   onTap: _rejecting ? null : _handleReject,
                   child: Container(
@@ -430,7 +436,6 @@ class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
                             color: Colors.white, size: 22),
                   ),
                 ),
-                // Bouton Répondre
                 GestureDetector(
                   onTap: _accepting ? null : _handleAccept,
                   child: Container(
@@ -571,12 +576,12 @@ class _MobileLayout extends ConsumerWidget {
               NavigationDestination(
                 icon: Badge(
                   isLabelVisible: unread > 0,
-                  label: Text('$unread'),
+                  label: Text(unread > 9 ? '9+' : '$unread'),
                   child: const Icon(Icons.notifications_outlined),
                 ),
                 selectedIcon: Badge(
                   isLabelVisible: unread > 0,
-                  label: Text('$unread'),
+                  label: Text(unread > 9 ? '9+' : '$unread'),
                   child: const Icon(Icons.notifications_rounded),
                 ),
                 label: 'Notifs',
@@ -632,7 +637,6 @@ class _WebLayout extends ConsumerWidget {
                   ),
                   child: Column(
                     children: [
-                      // Logo
                       Container(
                         height: 64,
                         padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -729,7 +733,6 @@ class _WebLayout extends ConsumerWidget {
                           ],
                         ),
                       ),
-                      // User info + logout
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: const BoxDecoration(
@@ -853,12 +856,14 @@ class _SidebarItem extends StatelessWidget {
                       color: AppColors.primary,
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: Text('$badge',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            fontFamily: 'Nunito')),
+                    child: Text(
+                      badge! > 9 ? '9+' : '$badge',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'Nunito'),
+                    ),
                   ),
               ],
             ),
