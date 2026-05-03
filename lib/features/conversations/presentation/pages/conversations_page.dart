@@ -567,11 +567,11 @@ void _showOptions(BuildContext context) {
 
   String _getLastMessagePreview(MessageModel? msg) {
     if (msg == null) return 'Démarrer la conversation...';
-    if (msg.isDeleted) return '🗑 Message supprimé';
-    if (msg.isImage) return '📷 Photo';
-    if (msg.isFile) return '📄 ${msg.mediaName ?? 'Fichier'}';
-    if (msg.isAudio) return '🎵 Message vocal';
-    if (msg.isVideo) return '🎥 Vidéo';
+    if (msg.isDeleted) return 'Message supprimé';
+    if (msg.isImage) return 'to';
+    if (msg.isFile) return ' ${msg.mediaName ?? 'Fichier'}';
+    if (msg.isAudio) return 'Message vocal';
+    if (msg.isVideo) return ' Vidéo';
     return msg.body ?? '';
   }
 }

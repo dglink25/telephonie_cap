@@ -6,6 +6,7 @@ import '../../../../core/services/notification_service.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/models/models.dart';
 import '../../../../shared/models/user_model.dart';
+import '../../../../shared/widgets/app_modal.dart';
 import '../../../auth/data/auth_provider.dart';
 import '../../../conversations/data/conversations_provider.dart';
 import '../../../notifications/data/notifications_provider.dart';
@@ -52,12 +53,28 @@ class _HomePageState extends ConsumerState<HomePage> {
 
     _callService.onCallStatusChanged = (String status) {
       if (!mounted) return;
-      if (status == 'ended' || status == 'rejected') {
+      if (status == 'ended' || status == 'rejected' || status == 'missed') {
         _callService.stopIncomingRingtone();
         setState(() => _globalIncomingCall = null);
-        NotificationService().cancelAll();
+        if (!_isOnCallPage()) {
+          NotificationService().cancelAll();
+        }
       }
     };
+
+    _callService.onError = (String error) {
+      if (!mounted) return;
+      AppModal.error(context, title: 'Erreur d\'appel', message: error);
+    };
+  }
+
+  bool _isOnCallPage() {
+    try {
+      final location = GoRouterState.of(context).matchedLocation;
+      return location.startsWith('/calls/');
+    } catch (_) {
+      return false;
+    }
   }
 
   void _setupNotificationCallbacks() {
@@ -67,7 +84,8 @@ class _HomePageState extends ConsumerState<HomePage> {
 
       if (action == 'answer') {
         final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
-        final convId = int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
+        final convId =
+            int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
         if (callId > 0 && convId > 0) {
           _acceptCallFromNotification(
             callId: callId,
@@ -81,12 +99,17 @@ class _HomePageState extends ConsumerState<HomePage> {
 
       if (action == 'reject') {
         final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
-        if (callId > 0) _callService.rejectCall(callId);
+        if (callId > 0) {
+          _callService.rejectCall(callId);
+          setState(() => _globalIncomingCall = null);
+        }
         return;
       }
 
+      // Afficher la bannière si pas déjà un appel entrant
       final callId = int.tryParse(data['call_id']?.toString() ?? '0') ?? 0;
-      final convId = int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
+      final convId =
+          int.tryParse(data['conversation_id']?.toString() ?? '0') ?? 0;
       if (callId > 0 && _globalIncomingCall == null) {
         final info = IncomingCallInfo(
           callId: callId,
@@ -125,19 +148,26 @@ class _HomePageState extends ConsumerState<HomePage> {
     NotificationService().cancelCallNotification(info.callId);
 
     final currentUser = ref.read(currentUserProvider);
+    if (currentUser == null) {
+      AppModal.error(context,
+          title: 'Erreur', message: 'Utilisateur non authentifié.');
+      return;
+    }
+
     final success = await _callService.answerCall(
       info.callId,
       info.conversationId,
-      currentUser?.id ?? 0,
+      currentUser.id,
     );
 
-    if (success && mounted) {
+    if (!mounted) return;
+
+    if (success) {
       final conversationsAsync = ref.read(conversationsProvider);
       List<UserModel> participants = [];
       conversationsAsync.whenData((conversations) {
-        final conv = conversations
-            .where((c) => c.id == info.conversationId)
-            .firstOrNull;
+        final conv =
+            conversations.where((c) => c.id == info.conversationId).firstOrNull;
         participants = conv?.participants ?? [];
       });
 
@@ -164,6 +194,12 @@ class _HomePageState extends ConsumerState<HomePage> {
         'call': call,
         'participants': participants,
       });
+    } else {
+      if (mounted) {
+        AppModal.error(context,
+            title: 'Appel indisponible',
+            message: 'L\'appel n\'est plus disponible. Il a peut-être été annulé.');
+      }
     }
   }
 
@@ -191,8 +227,6 @@ class _HomePageState extends ConsumerState<HomePage> {
     await _callService.rejectCall(info.callId);
   }
 
-  // ─── Navigation index ─────────────────────────────────────────
-  // 0=Messages, 1=Appels, 2=Groupes, 3=Notifications, 4=Admin
   int _locationToIndex(String location) {
     if (location.startsWith('/calls-history')) return 1;
     if (location.startsWith('/groups')) return 2;
@@ -203,11 +237,21 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   void _onNavTap(BuildContext context, int index, bool isAdmin) {
     switch (index) {
-      case 0: context.go('/home'); break;
-      case 1: context.go('/calls-history'); break;
-      case 2: context.go('/groups'); break;
-      case 3: context.go('/notifications'); break;
-      case 4: if (isAdmin) context.go('/admin'); break;
+      case 0:
+        context.go('/home');
+        break;
+      case 1:
+        context.go('/calls-history');
+        break;
+      case 2:
+        context.go('/groups');
+        break;
+      case 3:
+        context.go('/notifications');
+        break;
+      case 4:
+        if (isAdmin) context.go('/admin');
+        break;
     }
   }
 
@@ -219,6 +263,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     final currentIndex = _locationToIndex(location);
     final isWide = MediaQuery.of(context).size.width > 768;
 
+    // Écouter les nouvelles conversations pour les abonnements WebSocket
     ref.listen(conversationsProvider, (_, next) {
       next.whenData((conversations) {
         for (final conv in conversations) {
@@ -281,6 +326,8 @@ class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   late Animation<Offset> _slide;
+  bool _accepting = false;
+  bool _rejecting = false;
 
   @override
   void initState() {
@@ -296,6 +343,18 @@ class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
   void dispose() {
     _ctrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleAccept() async {
+    if (_accepting || _rejecting) return;
+    setState(() => _accepting = true);
+    widget.onAccept();
+  }
+
+  Future<void> _handleReject() async {
+    if (_accepting || _rejecting) return;
+    setState(() => _rejecting = true);
+    widget.onReject();
   }
 
   @override
@@ -348,36 +407,54 @@ class _GlobalIncomingCallBannerState extends State<_GlobalIncomingCallBanner>
                     ],
                   ),
                 ),
+                // Bouton Refuser
                 GestureDetector(
-                  onTap: widget.onReject,
+                  onTap: _rejecting ? null : _handleReject,
                   child: Container(
                     width: 48,
                     height: 48,
                     margin: const EdgeInsets.only(right: 10),
-                    decoration: const BoxDecoration(
-                      color: AppColors.error,
+                    decoration: BoxDecoration(
+                      color: _rejecting
+                          ? AppColors.error.withOpacity(0.6)
+                          : AppColors.error,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.call_end_rounded,
-                        color: Colors.white, size: 22),
+                    child: _rejecting
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.call_end_rounded,
+                            color: Colors.white, size: 22),
                   ),
                 ),
+                // Bouton Répondre
                 GestureDetector(
-                  onTap: widget.onAccept,
+                  onTap: _accepting ? null : _handleAccept,
                   child: Container(
                     width: 48,
                     height: 48,
-                    decoration: const BoxDecoration(
-                      color: AppColors.success,
+                    decoration: BoxDecoration(
+                      color: _accepting
+                          ? AppColors.success.withOpacity(0.6)
+                          : AppColors.success,
                       shape: BoxShape.circle,
                     ),
-                    child: Icon(
-                      widget.info.callType == 'video'
-                          ? Icons.videocam_rounded
-                          : Icons.call_rounded,
-                      color: Colors.white,
-                      size: 22,
-                    ),
+                    child: _accepting
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                        : Icon(
+                            widget.info.callType == 'video'
+                                ? Icons.videocam_rounded
+                                : Icons.call_rounded,
+                            color: Colors.white,
+                            size: 22,
+                          ),
                   ),
                 ),
               ]),
@@ -436,7 +513,7 @@ class _PulsingIconState extends State<_PulsingIcon>
   }
 }
 
-// ─── Layout Mobile ─────────────────────────────────────────
+// ─── Layout Mobile ────────────────────────────────────────────
 class _MobileLayout extends ConsumerWidget {
   final Widget child;
   final int currentIndex;
@@ -550,7 +627,8 @@ class _WebLayout extends ConsumerWidget {
                   width: 260,
                   decoration: const BoxDecoration(
                     color: AppColors.white,
-                    border: Border(right: BorderSide(color: AppColors.grey200)),
+                    border:
+                        Border(right: BorderSide(color: AppColors.grey200)),
                   ),
                   child: Column(
                     children: [
@@ -559,12 +637,15 @@ class _WebLayout extends ConsumerWidget {
                         height: 64,
                         padding: const EdgeInsets.symmetric(horizontal: 20),
                         decoration: const BoxDecoration(
-                          border: Border(bottom: BorderSide(color: AppColors.grey200)),
+                          border: Border(
+                              bottom:
+                                  BorderSide(color: AppColors.grey200)),
                         ),
                         child: Row(
                           children: [
                             Container(
-                              width: 36, height: 36,
+                              width: 36,
+                              height: 36,
                               decoration: BoxDecoration(
                                 color: AppColors.primarySurface,
                                 borderRadius: BorderRadius.circular(10),
@@ -638,8 +719,10 @@ class _WebLayout extends ConsumerWidget {
                                 badge: unread > 0 ? unread : null),
                             if (isAdmin)
                               _SidebarItem(
-                                  icon: Icons.admin_panel_settings_outlined,
-                                  selectedIcon: Icons.admin_panel_settings_rounded,
+                                  icon:
+                                      Icons.admin_panel_settings_outlined,
+                                  selectedIcon:
+                                      Icons.admin_panel_settings_rounded,
                                   label: 'Administration',
                                   selected: currentIndex == 4,
                                   onTap: () => onNavTap(4)),
@@ -650,12 +733,14 @@ class _WebLayout extends ConsumerWidget {
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: const BoxDecoration(
-                          border: Border(top: BorderSide(color: AppColors.grey200)),
+                          border: Border(
+                              top: BorderSide(color: AppColors.grey200)),
                         ),
                         child: Row(
                           children: [
                             Container(
-                              width: 36, height: 36,
+                              width: 36,
+                              height: 36,
                               decoration: const BoxDecoration(
                                   color: AppColors.primary,
                                   shape: BoxShape.circle),
@@ -739,24 +824,31 @@ class _SidebarItem extends StatelessWidget {
           onTap: onTap,
           borderRadius: BorderRadius.circular(12),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             child: Row(
               children: [
                 Icon(selected ? selectedIcon : icon,
-                    color: selected ? AppColors.primary : AppColors.grey500,
+                    color:
+                        selected ? AppColors.primary : AppColors.grey500,
                     size: 20),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(label,
                       style: TextStyle(
                           fontSize: 14,
-                          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                          color: selected ? AppColors.primary : AppColors.grey600,
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: selected
+                              ? AppColors.primary
+                              : AppColors.grey600,
                           fontFamily: 'Nunito')),
                 ),
                 if (badge != null)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppColors.primary,
                       borderRadius: BorderRadius.circular(10),
@@ -792,14 +884,18 @@ class _WebFooter extends StatelessWidget {
           Text(
             '© ${DateTime.now().year} Téléphonie CAP — Tous droits réservés',
             style: const TextStyle(
-                fontSize: 12, color: AppColors.grey400, fontFamily: 'Nunito'),
+                fontSize: 12,
+                color: AppColors.grey400,
+                fontFamily: 'Nunito'),
           ),
           const SizedBox(width: 16),
           const Text('•', style: TextStyle(color: AppColors.grey300)),
           const SizedBox(width: 16),
           const Text('Version 1.0.0',
               style: TextStyle(
-                  fontSize: 12, color: AppColors.grey400, fontFamily: 'Nunito')),
+                  fontSize: 12,
+                  color: AppColors.grey400,
+                  fontFamily: 'Nunito')),
         ],
       ),
     );
