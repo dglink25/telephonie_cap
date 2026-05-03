@@ -21,6 +21,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/websocket/websocket_service.dart';
 import '../../../../shared/models/models.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
+import '../../../../shared/widgets/app_modal.dart';
 import '../../../auth/data/auth_provider.dart';
 import '../../../conversations/data/conversations_provider.dart';
 import '../../data/messages_provider.dart';
@@ -49,16 +50,13 @@ class _ChatPageState extends ConsumerState<ChatPage>
   Timer? _typingTimer;
 
   bool _isSendingFile = false;
-  String? _sendingFileError;
+  int _uploadProgress = 0;
 
   bool _isRecording = false;
   bool _isLongPressing = false;
   Duration _recordingDuration = Duration.zero;
   Timer? _recordingTimer;
-  String? _currentRecordPath;
   late AnimationController _recordingPulseController;
-
-  bool _showAttachBar = false;
 
   bool get isGroup => _conversation?.isGroup ?? false;
 
@@ -124,7 +122,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
         }
         ref.read(conversationsProvider.notifier).load();
       },
-
       'user.typing': (data) {
         if (!mounted) return;
         final userId = data['user_id'] as int?;
@@ -146,20 +143,21 @@ class _ChatPageState extends ConsumerState<ChatPage>
           }
         }
       },
-
       'call.initiated': (data) {
         if (!mounted) return;
         final callerId = data['caller_id'] as int?;
         if (callerId == currentUser?.id) return;
-        final call = CallModel.fromJson(data);
-        context.push('/calls/${call.id}', extra: call);
+        try {
+          final call = CallModel.fromJson(data);
+          context.push('/calls/${call.id}', extra: call);
+        } catch (e) {
+          debugPrint('[ChatPage] call.initiated parse error: $e');
+        }
       },
-
       'call.status': (data) {
         _callService.onCallStatusChanged
             ?.call(data['status'] as String? ?? '');
       },
-
       'call.signal': (data) {
         final senderId = data['sender_id'] as int?;
         if (senderId != currentUser?.id) {
@@ -167,20 +165,21 @@ class _ChatPageState extends ConsumerState<ChatPage>
         }
       },
     });
-
-    _callService.listenToConversation(widget.conversationId);
   }
 
   Future<void> _loadConversation() async {
     try {
-      final response = await ApiClient().getConversation(widget.conversationId);
+      final response =
+          await ApiClient().getConversation(widget.conversationId);
       if (mounted) {
         setState(() {
-          _conversation =
-              ConversationModel.fromJson(response.data as Map<String, dynamic>);
+          _conversation = ConversationModel.fromJson(
+              response.data as Map<String, dynamic>);
         });
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[ChatPage] loadConversation error: $e');
+    }
   }
 
   Future<void> _markRead() async {
@@ -202,7 +201,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
         .read(messagesProvider(widget.conversationId).notifier)
         .sendText(text);
 
-    if (success) _scrollToBottom();
+    if (success) {
+      _scrollToBottom();
+    } else {
+      if (mounted) {
+        AppModal.error(context,
+            title: 'Envoi échoué',
+            message: 'Le message n\'a pas pu être envoyé. Vérifiez votre connexion.');
+      }
+    }
   }
 
   void _scrollToBottom({bool animated = true}) {
@@ -215,28 +222,36 @@ class _ChatPageState extends ConsumerState<ChatPage>
             curve: Curves.easeOut,
           );
         } else {
-          _scrollController
-              .jumpTo(_scrollController.position.maxScrollExtent);
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
         }
       }
     });
   }
 
+  // ── Enregistrement vocal ──────────────────────────────────────
   Future<void> _startRecording() async {
     if (kIsWeb) {
-      _showError('Enregistrement vocal non disponible sur le web');
+      AppModal.info(context,
+          title: 'Non disponible',
+          message:
+              'L\'enregistrement vocal n\'est pas disponible sur le navigateur web.');
       return;
     }
 
     try {
       final hasPermission = await _recorder.hasPermission();
       if (!hasPermission) {
-        _showError('Permission microphone refusée');
+        if (mounted) {
+          AppModal.error(context,
+              title: 'Permission refusée',
+              message:
+                  'Autorisez l\'accès au microphone dans les paramètres de votre appareil.');
+        }
         return;
       }
 
       final dir = await getTemporaryDirectory();
-      _currentRecordPath =
+      final path =
           '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
       await _recorder.start(
@@ -245,7 +260,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
           bitRate: 128000,
           sampleRate: 44100,
         ),
-        path: _currentRecordPath!,
+        path: path,
       );
 
       setState(() {
@@ -253,17 +268,21 @@ class _ChatPageState extends ConsumerState<ChatPage>
         _recordingDuration = Duration.zero;
       });
 
-      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _recordingTimer =
+          Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) {
-          setState(() {
-            _recordingDuration += const Duration(seconds: 1);
-          });
+          setState(
+              () => _recordingDuration += const Duration(seconds: 1));
         }
       });
 
       HapticFeedback.mediumImpact();
     } catch (e) {
-      _showError('Impossible de démarrer l\'enregistrement: $e');
+      if (mounted) {
+        AppModal.error(context,
+            title: 'Erreur microphone',
+            message: 'Impossible de démarrer l\'enregistrement: $e');
+      }
     }
   }
 
@@ -275,19 +294,38 @@ class _ChatPageState extends ConsumerState<ChatPage>
     try {
       final path = await _recorder.stop();
       if (path == null || _recordingDuration.inSeconds < 1) {
-        if (path != null) File(path).deleteSync();
+        if (path != null) {
+          try {
+            File(path).deleteSync();
+          } catch (_) {}
+        }
         return;
       }
 
-      setState(() => _isSendingFile = true);
+      setState(() {
+        _isSendingFile = true;
+        _uploadProgress = 0;
+      });
+
       final success = await ref
           .read(messagesProvider(widget.conversationId).notifier)
-          .sendFile(path, 'audio');
+          .sendFile(
+            path,
+            'audio',
+            onProgress: (sent, total) {
+              if (total > 0 && mounted) {
+                setState(
+                    () => _uploadProgress = (sent / total * 100).round());
+              }
+            },
+          );
 
       setState(() => _isSendingFile = false);
 
-      if (!success) {
-        _showError('Échec de l\'envoi du message vocal');
+      if (!success && mounted) {
+        AppModal.error(context,
+            title: 'Envoi échoué',
+            message: 'Le message vocal n\'a pas pu être envoyé.');
       } else {
         _scrollToBottom();
       }
@@ -297,7 +335,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
       } catch (_) {}
     } catch (e) {
       setState(() => _isSendingFile = false);
-      _showError('Erreur lors de l\'envoi vocal');
+      if (mounted) {
+        AppModal.error(context,
+            title: 'Erreur vocale',
+            message: 'Erreur lors de l\'envoi du message vocal.');
+      }
     }
   }
 
@@ -317,6 +359,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     HapticFeedback.lightImpact();
   }
 
+  // ── Sélection images/fichiers ─────────────────────────────────
   Future<void> _pickImage({ImageSource source = ImageSource.gallery}) async {
     try {
       if (kIsWeb) {
@@ -345,7 +388,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
         await _sendFilePath(picked.path, 'image');
       }
     } catch (e) {
-      _showError('Impossible de charger l\'image: $e');
+      if (mounted) {
+        AppModal.error(context,
+            title: 'Erreur image',
+            message: 'Impossible de charger l\'image: $e');
+      }
     }
   }
 
@@ -362,7 +409,12 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
         const maxBytes = 25 * 1024 * 1024;
         if (f.bytes!.length > maxBytes) {
-          _showError('La vidéo dépasse 25 MB. Veuillez choisir une vidéo plus courte.');
+          if (mounted) {
+            AppModal.warning(context,
+                title: 'Fichier trop volumineux',
+                message:
+                    'La vidéo dépasse 25 MB. Veuillez choisir une vidéo plus courte.');
+          }
           return;
         }
 
@@ -374,7 +426,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
       final result = await FilePicker.platform.pickFiles(
         type: FileType.video,
         withData: false,
-        withReadStream: false,
       );
 
       if (result == null || result.files.first.path == null) return;
@@ -386,13 +437,22 @@ class _ChatPageState extends ConsumerState<ChatPage>
       const maxBytes = 25 * 1024 * 1024;
       if (fileSize > maxBytes) {
         final sizeMb = (fileSize / 1024 / 1024).toStringAsFixed(1);
-        _showError('La vidéo fait $sizeMb MB. La limite est de 25 MB.');
+        if (mounted) {
+          AppModal.warning(context,
+              title: 'Fichier trop volumineux',
+              message:
+                  'La vidéo fait $sizeMb MB. La limite est de 25 MB.');
+        }
         return;
       }
 
       await _sendFilePath(path, 'video');
     } catch (e) {
-      _showError('Impossible de charger la vidéo: $e');
+      if (mounted) {
+        AppModal.error(context,
+            title: 'Erreur vidéo',
+            message: 'Impossible de charger la vidéo: $e');
+      }
     }
   }
 
@@ -416,14 +476,18 @@ class _ChatPageState extends ConsumerState<ChatPage>
         await _sendFilePath(path, msgType);
       }
     } catch (e) {
-      _showError('Impossible d\'envoyer le fichier: $e');
+      if (mounted) {
+        AppModal.error(context,
+            title: 'Erreur fichier',
+            message: 'Impossible d\'envoyer le fichier: $e');
+      }
     }
   }
 
   Future<void> _sendFilePath(String path, String type) async {
     setState(() {
       _isSendingFile = true;
-      _sendingFileError = null;
+      _uploadProgress = 0;
     });
 
     final success = await ref
@@ -432,17 +496,19 @@ class _ChatPageState extends ConsumerState<ChatPage>
           path,
           type,
           onProgress: (sent, total) {
-            if (total > 0) {
-              final pct = (sent / total * 100).toStringAsFixed(0);
-              debugPrint('[Upload] $pct% ($sent/$total)');
+            if (total > 0 && mounted) {
+              setState(() => _uploadProgress = (sent / total * 100).round());
             }
           },
         );
 
-    setState(() => _isSendingFile = false);
+    if (mounted) setState(() => _isSendingFile = false);
 
-    if (!success) {
-      _showError('Échec de l\'envoi. Vérifiez votre connexion et réessayez.');
+    if (!success && mounted) {
+      AppModal.error(context,
+          title: 'Envoi échoué',
+          message:
+              'Le fichier n\'a pas pu être envoyé. Vérifiez votre connexion et la taille du fichier.');
     } else {
       _scrollToBottom();
     }
@@ -456,17 +522,20 @@ class _ChatPageState extends ConsumerState<ChatPage>
   ) async {
     setState(() {
       _isSendingFile = true;
-      _sendingFileError = null;
+      _uploadProgress = 0;
     });
 
     final success = await ref
         .read(messagesProvider(widget.conversationId).notifier)
         .sendFileBytes(bytes, fileName, type, mime);
 
-    setState(() => _isSendingFile = false);
+    if (mounted) setState(() => _isSendingFile = false);
 
-    if (!success) {
-      _showError('Échec de l\'envoi. Vérifiez votre connexion et réessayez.');
+    if (!success && mounted) {
+      AppModal.error(context,
+          title: 'Envoi échoué',
+          message:
+              'Le fichier n\'a pas pu être envoyé. Vérifiez votre connexion.');
     } else {
       _scrollToBottom();
     }
@@ -507,45 +576,71 @@ class _ChatPageState extends ConsumerState<ChatPage>
     return 'file';
   }
 
+  // ── Appel ─────────────────────────────────────────────────────
   Future<void> _initiateCall(String type) async {
     final currentUser = ref.read(currentUserProvider);
-    if (currentUser == null) return;
-
-    final callData = await _callService.initiateCall(
-      widget.conversationId,
-      type,
-      currentUser.id,
-    );
-
-    if (callData != null && mounted) {
-      final call = CallModel.fromJson(callData);
-      context.push('/calls/${call.id}', extra: call);
-    } else if (mounted) {
-      _showError('Impossible de démarrer l\'appel.');
+    if (currentUser == null) {
+      AppModal.error(context,
+          title: 'Non authentifié',
+          message: 'Vous devez être connecté pour passer un appel.');
+      return;
     }
-  }
 
-  void _showError(String msg) {
+    // Vérifier si un appel est déjà en cours
+    if (_callService.isBusy) {
+      AppModal.warning(context,
+          title: 'Appel en cours',
+          message:
+              'Vous êtes déjà en communication. Terminez l\'appel en cours avant d\'en démarrer un nouveau.');
+      return;
+    }
+
+    // Clé pour fermer UNIQUEMENT ce dialog (pas la page)
+    bool dialogOpen = false;
+
+    // Afficher le dialog de connexion
+    dialogOpen = true;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => const _CallingDialog(),
+    ).then((_) => dialogOpen = false);
+
+    Map<String, dynamic>? callData;
+    try {
+      callData = await _callService.initiateCall(
+        widget.conversationId,
+        type,
+        currentUser.id,
+      );
+    } catch (e) {
+      debugPrint('[ChatPage] initiateCall exception: $e');
+    }
+
+    // Fermer le dialog UNIQUEMENT s'il est encore ouvert
+    if (mounted && dialogOpen) {
+      Navigator.of(context, rootNavigator: true).pop();
+      dialogOpen = false;
+    }
+
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.error_outline, color: Colors.white, size: 18),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(msg,
-                  style: const TextStyle(fontFamily: 'Nunito', fontSize: 14)),
-            ),
-          ],
-        ),
-        backgroundColor: AppColors.error,
-        behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.all(12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        duration: const Duration(seconds: 4),
-      ),
-    );
+
+    if (callData != null) {
+      try {
+        final call = CallModel.fromJson(callData);
+        debugPrint('[ChatPage] Navigation vers /calls/${call.id}');
+        context.push('/calls/${call.id}', extra: {
+          'call': call,
+          'participants': _conversation?.participants ?? [],
+        });
+      } catch (e) {
+        debugPrint('[ChatPage] fromJson error: $e — callData=$callData');
+        AppModal.error(context,
+            title: 'Erreur de navigation',
+            message: 'Appel créé mais impossible d\'ouvrir la page: $e');
+      }
+    }
+    // Si callData == null, l'erreur est affichée par onError dans CallService
   }
 
   Future<void> _startPrivateFromGroup(UserModel sender) async {
@@ -571,7 +666,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
   @override
   Widget build(BuildContext context) {
-    final messagesAsync = ref.watch(messagesProvider(widget.conversationId));
+    final messagesAsync =
+        ref.watch(messagesProvider(widget.conversationId));
     final currentUser = ref.watch(currentUserProvider);
     final conv = _conversation;
     final displayName =
@@ -691,16 +787,18 @@ class _ChatPageState extends ConsumerState<ChatPage>
         if (!isGroup)
           IconButton(
             icon: const Icon(Icons.videocam_rounded, color: Colors.white),
+            tooltip: 'Appel vidéo',
             onPressed: () => _initiateCall('video'),
           ),
         if (!isGroup)
           IconButton(
             icon: const Icon(Icons.call_rounded, color: Colors.white),
+            tooltip: 'Appel audio',
             onPressed: () => _initiateCall('audio'),
           ),
         IconButton(
           icon: const Icon(Icons.more_vert, color: Colors.white),
-          onPressed: () => _showMoreMenu(),
+          onPressed: _showMoreMenu,
         ),
       ],
     );
@@ -730,15 +828,16 @@ class _ChatPageState extends ConsumerState<ChatPage>
             const SizedBox(height: 8),
             if (isGroup && conv != null)
               ListTile(
-                leading:
-                    const Icon(Icons.settings_rounded, color: AppColors.primary),
+                leading: const Icon(Icons.settings_rounded,
+                    color: AppColors.primary),
                 title: const Text('Paramètres du groupe',
                     style: TextStyle(fontFamily: 'Nunito')),
                 onTap: () {
                   Navigator.pop(context);
                   final groupId = conv.group?.id ?? conv.groupId;
-                  if (groupId != null)
+                  if (groupId != null) {
                     context.push('/groups/$groupId/settings');
+                  }
                 },
               ),
             ListTile(
@@ -761,19 +860,26 @@ class _ChatPageState extends ConsumerState<ChatPage>
       color: const Color(0xFFDCF8C6),
       child: Row(
         children: [
-          const SizedBox(
-            width: 14,
-            height: 14,
+          SizedBox(
+            width: 16,
+            height: 16,
             child: CircularProgressIndicator(
-                strokeWidth: 2, color: AppColors.primary),
+              strokeWidth: 2,
+              color: AppColors.primary,
+              value: _uploadProgress > 0 ? _uploadProgress / 100 : null,
+            ),
           ),
           const SizedBox(width: 10),
-          const Text('Envoi en cours...',
-              style: TextStyle(
-                  color: AppColors.primary,
-                  fontFamily: 'Nunito',
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600)),
+          Text(
+            _uploadProgress > 0
+                ? 'Envoi en cours... $_uploadProgress%'
+                : 'Envoi en cours...',
+            style: const TextStyle(
+                color: AppColors.primary,
+                fontFamily: 'Nunito',
+                fontSize: 13,
+                fontWeight: FontWeight.w600),
+          ),
         ],
       ),
     );
@@ -786,7 +892,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               decoration: BoxDecoration(
                 color: const Color(0xFFFFF3C4),
                 borderRadius: BorderRadius.circular(12),
@@ -820,11 +927,13 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
           final showAvatar = !isMine &&
               isGroup &&
-              (index == 0 || messages[index - 1].senderId != msg.senderId);
+              (index == 0 ||
+                  messages[index - 1].senderId != msg.senderId);
 
           final showName = !isMine &&
               isGroup &&
-              (index == 0 || messages[index - 1].senderId != msg.senderId);
+              (index == 0 ||
+                  messages[index - 1].senderId != msg.senderId);
 
           return Column(
             children: [
@@ -836,9 +945,18 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 showName: showName,
                 isGroup: isGroup,
                 onDelete: isMine
-                    ? () => ref
-                        .read(messagesProvider(widget.conversationId).notifier)
-                        .deleteMessage(msg.id)
+                    ? () async {
+                        final success = await ref
+                            .read(messagesProvider(widget.conversationId)
+                                .notifier)
+                            .deleteMessage(msg.id);
+                        if (!success && mounted) {
+                          AppModal.error(context,
+                              title: 'Suppression échouée',
+                              message:
+                                  'Impossible de supprimer le message.');
+                        }
+                      }
                     : null,
                 onNameTap: !isMine && msg.sender != null
                     ? () => _startPrivateFromGroup(msg.sender!)
@@ -859,8 +977,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     String label;
     if (_isSameDay(date, now)) {
       label = 'Aujourd\'hui';
-    } else if (_isSameDay(
-        date, now.subtract(const Duration(days: 1)))) {
+    } else if (_isSameDay(date, now.subtract(const Duration(days: 1)))) {
       label = 'Hier';
     } else {
       label = '${date.day}/${date.month}/${date.year}';
@@ -870,7 +987,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Center(
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           decoration: BoxDecoration(
             color: const Color(0xFFD1F0E0),
             borderRadius: BorderRadius.circular(12),
@@ -899,7 +1017,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
       alignment: Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.only(left: 12, bottom: 4, top: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: const BorderRadius.only(
@@ -1038,7 +1157,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
                       shape: BoxShape.circle,
                       boxShadow: [
                         BoxShadow(
-                            color: const Color(0xFF1B7F4A).withOpacity(0.35),
+                            color:
+                                const Color(0xFF1B7F4A).withOpacity(0.35),
                             blurRadius: 8,
                             offset: const Offset(0, 3))
                       ],
@@ -1058,8 +1178,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
   Widget _buildRecordingBar() {
     final minutes = _recordingDuration.inMinutes;
     final seconds = _recordingDuration.inSeconds % 60;
-    final timeStr =
-        '$minutes:${seconds.toString().padLeft(2, '0')}';
+    final timeStr = '$minutes:${seconds.toString().padLeft(2, '0')}';
 
     return Row(
       children: [
@@ -1178,6 +1297,41 @@ class _ChatPageState extends ConsumerState<ChatPage>
   }
 }
 
+// ── Dialog "En train d'appeler" ───────────────────────────────────
+class _CallingDialog extends StatelessWidget {
+  const _CallingDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.all(28),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(color: AppColors.primary),
+            SizedBox(height: 16),
+            Text(
+              'Connexion en cours...',
+              style: TextStyle(
+                fontFamily: 'Nunito',
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: AppColors.grey700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ── WhatsApp Avatar ───────────────────────────────────────────────
 class _WhatsAppAvatar extends StatelessWidget {
   final String name;
@@ -1286,14 +1440,7 @@ class _AttachmentSheet extends StatelessWidget {
                 color: const Color(0xFFFF9F43),
                 onTap: onPickVideo,
               ),
-              _AttachOption(
-                icon: Icons.headphones_rounded,
-                label: 'Audio',
-                color: const Color(0xFF1B7F4A),
-                onTap: () {
-                  Navigator.pop(context);
-                },
-              ),
+              const SizedBox(width: 80),
               const SizedBox(width: 80),
             ],
           ),
@@ -1309,11 +1456,12 @@ class _AttachOption extends StatelessWidget {
   final Color color;
   final VoidCallback onTap;
 
-  const _AttachOption(
-      {required this.icon,
-      required this.label,
-      required this.color,
-      required this.onTap});
+  const _AttachOption({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1394,7 +1542,8 @@ class _TypingDotsState extends State<_TypingDots>
                 width: 6,
                 height: 6,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF8696A0).withOpacity(0.3 + 0.7 * opacity),
+                  color: const Color(0xFF8696A0)
+                      .withOpacity(0.3 + 0.7 * opacity),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -1440,7 +1589,6 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // FIX: Use LayoutBuilder for responsive bubble width
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxBubbleWidth = constraints.maxWidth * 0.78;
@@ -1467,9 +1615,12 @@ class _MessageBubble extends StatelessWidget {
                   const SizedBox(width: 34),
               ],
               GestureDetector(
-                onLongPress: onDelete != null ? () => _showMenu(context) : null,
+                onLongPress: onDelete != null
+                    ? () => _showDeleteMenu(context)
+                    : null,
                 child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+                  constraints:
+                      BoxConstraints(maxWidth: maxBubbleWidth),
                   child: Container(
                     decoration: BoxDecoration(
                       color: isMine
@@ -1499,7 +1650,9 @@ class _MessageBubble extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          if (!isMine && showName && message.sender != null)
+                          if (!isMine &&
+                              showName &&
+                              message.sender != null)
                             Padding(
                               padding: const EdgeInsets.only(
                                   left: 10, right: 10, top: 6),
@@ -1543,7 +1696,6 @@ class _MessageBubble extends StatelessWidget {
                                   )
                                 : _buildContent(context, maxBubbleWidth),
                           ),
-                          // FIX: Timestamp row — use Row with mainAxisSize.min, no Flexible spacer
                           Padding(
                             padding: const EdgeInsets.only(
                                 right: 8, left: 8, bottom: 5),
@@ -1564,7 +1716,8 @@ class _MessageBubble extends StatelessWidget {
                                 if (isMine) ...[
                                   const SizedBox(width: 3),
                                   const Icon(Icons.done_all_rounded,
-                                      size: 14, color: Color(0xFF53BDEB)),
+                                      size: 14,
+                                      color: Color(0xFF53BDEB)),
                                 ],
                               ],
                             ),
@@ -1605,13 +1758,10 @@ class _MessageBubble extends StatelessWidget {
       }
     }
 
-    // FIX: On web, use the API proxy endpoint to bypass CORS on storage files.
-    // On native, fetch directly with auth token.
     if (message.isImage && mediaUrl != null) {
       final imageUrl = kIsWeb ? _buildProxyUrl(mediaUrl) : mediaUrl;
       return _AuthNetworkImage(
         url: imageUrl,
-        // Responsive width: fill bubble up to maxBubbleWidth minus padding
         width: (maxBubbleWidth - 6).clamp(120.0, 280.0),
       );
     }
@@ -1630,7 +1780,6 @@ class _MessageBubble extends StatelessWidget {
 
     if (message.isVideo && mediaUrl != null) {
       final videoUrl = kIsWeb ? _buildProxyUrl(mediaUrl) : mediaUrl;
-      // Responsive video thumbnail
       final thumbWidth = (maxBubbleWidth - 6).clamp(160.0, 280.0);
       final thumbHeight = thumbWidth * 0.6;
       return GestureDetector(
@@ -1646,8 +1795,8 @@ class _MessageBubble extends StatelessWidget {
                 borderRadius: BorderRadius.circular(4),
               ),
               child: const Center(
-                child:
-                    Icon(Icons.videocam_rounded, color: Colors.white54, size: 52),
+                child: Icon(Icons.videocam_rounded,
+                    color: Colors.white54, size: 52),
               ),
             ),
             Container(
@@ -1657,8 +1806,8 @@ class _MessageBubble extends StatelessWidget {
                 color: Colors.black.withOpacity(0.55),
                 shape: BoxShape.circle,
               ),
-              child:
-                  const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 30),
+              child: const Icon(Icons.play_arrow_rounded,
+                  color: Colors.white, size: 30),
             ),
             if (message.mediaName != null)
               Positioned(
@@ -1668,7 +1817,9 @@ class _MessageBubble extends StatelessWidget {
                 child: Text(
                   message.mediaName!,
                   style: const TextStyle(
-                      color: Colors.white70, fontSize: 11, fontFamily: 'Nunito'),
+                      color: Colors.white70,
+                      fontSize: 11,
+                      fontFamily: 'Nunito'),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -1682,7 +1833,8 @@ class _MessageBubble extends StatelessWidget {
       final sizeStr = message.mediaSize != null
           ? _formatFileSize(message.mediaSize!)
           : '';
-      final ext = (message.mediaName ?? '').split('.').last.toUpperCase();
+      final ext =
+          (message.mediaName ?? '').split('.').last.toUpperCase();
 
       return GestureDetector(
         onTap: () => _openUrl(fileUrl),
@@ -1693,9 +1845,7 @@ class _MessageBubble extends StatelessWidget {
               width: 42,
               height: 42,
               decoration: BoxDecoration(
-                color: isMine
-                    ? const Color(0xFF1B7F4A).withOpacity(0.15)
-                    : const Color(0xFF1B7F4A).withOpacity(0.1),
+                color: const Color(0xFF1B7F4A).withOpacity(0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Column(
@@ -1714,17 +1864,14 @@ class _MessageBubble extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            // FIX: Use Flexible instead of Expanded inside Row with mainAxisSize.min
             Flexible(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     message.mediaName ?? 'Fichier',
-                    style: TextStyle(
-                      color: isMine
-                          ? const Color(0xFF111B21)
-                          : const Color(0xFF111B21),
+                    style: const TextStyle(
+                      color: Color(0xFF111B21),
                       fontFamily: 'Nunito',
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
@@ -1766,17 +1913,11 @@ class _MessageBubble extends StatelessWidget {
     return const SizedBox.shrink();
   }
 
-  /// Build a proxy URL that routes through the Laravel API (which has CORS configured).
-  /// This avoids direct browser requests to storage/ which lack CORS headers.
   String _buildProxyUrl(String originalUrl) {
-    // Extract the storage path from the full URL
-    // e.g. http://192.168.10.126:8000/storage/conversations/3/file.jpg
-    //   => /api/media/storage/conversations/3/file.jpg
     try {
       final uri = Uri.parse(originalUrl);
-      // The path is like /storage/conversations/3/file.jpg
-      // We proxy it through /api/media?path=storage/conversations/3/file.jpg
-      final storagePath = uri.path.replaceFirst('/storage/', '');
+      final storagePath =
+          uri.path.replaceFirst('/storage/', '');
       return '${AppConstants.baseUrl}/media?path=${Uri.encodeComponent(storagePath)}';
     } catch (_) {
       return originalUrl;
@@ -1785,7 +1926,8 @@ class _MessageBubble extends StatelessWidget {
 
   String _formatFileSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
-    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1048576)
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
     return '${(bytes / 1048576).toStringAsFixed(1)} MB';
   }
 
@@ -1796,7 +1938,7 @@ class _MessageBubble extends StatelessWidget {
     }
   }
 
-  void _showMenu(BuildContext context) {
+  void _showDeleteMenu(BuildContext context) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -1817,7 +1959,7 @@ class _MessageBubble extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded,
                   color: AppColors.error),
-              title: const Text('Supprimer',
+              title: const Text('Supprimer le message',
                   style: TextStyle(
                       color: AppColors.error, fontFamily: 'Nunito')),
               onTap: () {
@@ -1834,8 +1976,8 @@ class _MessageBubble extends StatelessWidget {
 }
 
 // ── Authenticated Network Image ─────────────────────────────────────
-/// On web: URL is already a proxy URL (goes through Laravel API with CORS).
-/// On native: fetches directly with Bearer token for private storage.
+final _imageCache = <String, Uint8List>{};
+
 class _AuthNetworkImage extends StatefulWidget {
   final String url;
   final double width;
@@ -1845,9 +1987,6 @@ class _AuthNetworkImage extends StatefulWidget {
   @override
   State<_AuthNetworkImage> createState() => _AuthNetworkImageState();
 }
-
-// Simple in-memory image cache
-final _imageCache = <String, Uint8List>{};
 
 class _AuthNetworkImageState extends State<_AuthNetworkImage> {
   Uint8List? _imageBytes;
@@ -1890,9 +2029,7 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
 
     try {
       final uri = Uri.tryParse(widget.url);
-      if (uri == null || !uri.hasScheme) {
-        throw Exception('URL invalide: ${widget.url}');
-      }
+      if (uri == null || !uri.hasScheme) throw Exception('URL invalide');
 
       final token = await AuthStorage.getToken();
       final dio = Dio(BaseOptions(
@@ -1913,7 +2050,7 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
       );
 
       if (response.data == null || response.data!.isEmpty) {
-        throw Exception('Réponse vide du serveur');
+        throw Exception('Réponse vide');
       }
 
       final bytes = Uint8List.fromList(response.data!);
@@ -1926,16 +2063,8 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
           _error = false;
         });
       }
-    } on DioException catch (e) {
-      debugPrint('[Image] DioException fetching ${widget.url}: ${e.type} - ${e.response?.statusCode}');
-      if (mounted) {
-        setState(() {
-          _error = true;
-          _loading = false;
-        });
-      }
     } catch (e) {
-      debugPrint('[Image] Error fetching ${widget.url}: $e');
+      debugPrint('[Image] Error: $e');
       if (mounted) {
         setState(() {
           _error = true;
@@ -2008,29 +2137,20 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
           width: w,
           fit: BoxFit.cover,
           errorBuilder: (context, error, stackTrace) {
-            debugPrint('[Image] Flutter decode error: $error');
             return GestureDetector(
-              onTap: () => launchUrl(Uri.parse(widget.url),
-                  mode: LaunchMode.externalApplication),
+              onTap: () =>
+                  launchUrl(Uri.parse(widget.url),
+                      mode: LaunchMode.externalApplication),
               child: Container(
                 width: w,
                 height: 140,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEBEBEB),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: const Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.image_not_supported_rounded,
-                        color: AppColors.grey400, size: 36),
-                    SizedBox(height: 6),
-                    Text('Appuyer pour ouvrir',
-                        style: TextStyle(
-                            color: AppColors.grey400,
-                            fontSize: 12,
-                            fontFamily: 'Nunito')),
-                  ],
+                color: const Color(0xFFEBEBEB),
+                child: const Center(
+                  child: Text('Appuyer pour ouvrir',
+                      style: TextStyle(
+                          color: AppColors.grey400,
+                          fontSize: 12,
+                          fontFamily: 'Nunito')),
                 ),
               ),
             );
@@ -2063,7 +2183,7 @@ class _AuthNetworkImageState extends State<_AuthNetworkImage> {
               child: Image.memory(
                 _imageBytes!,
                 fit: BoxFit.contain,
-                errorBuilder: (context, error, stackTrace) => const Icon(
+                errorBuilder: (_, __, ___) => const Icon(
                   Icons.broken_image_rounded,
                   color: Colors.white54,
                   size: 64,
@@ -2112,17 +2232,14 @@ class _AudioBubble extends StatelessWidget {
           Container(
             width: 38,
             height: 38,
-            decoration: BoxDecoration(
-              color: isMine
-                  ? const Color(0xFF1B7F4A)
-                  : const Color(0xFF1B7F4A).withOpacity(0.85),
+            decoration: const BoxDecoration(
+              color: Color(0xFF1B7F4A),
               shape: BoxShape.circle,
             ),
             child: const Icon(Icons.play_arrow_rounded,
                 color: Colors.white, size: 24),
           ),
           const SizedBox(width: 10),
-          // FIX: wrap waveform in Flexible to prevent overflow
           Flexible(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2133,7 +2250,8 @@ class _AudioBubble extends StatelessWidget {
                     (i) => Container(
                       width: 3,
                       height: 8.0 + (i % 4) * 5.0,
-                      margin: const EdgeInsets.symmetric(horizontal: 1.5),
+                      margin:
+                          const EdgeInsets.symmetric(horizontal: 1.5),
                       decoration: BoxDecoration(
                         color: isMine
                             ? const Color(0xFF1B7F4A).withOpacity(0.6)

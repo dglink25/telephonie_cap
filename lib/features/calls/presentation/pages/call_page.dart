@@ -13,6 +13,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/models/models.dart';
 import '../../../../shared/models/user_model.dart';
 import '../../../../shared/widgets/avatar_widget.dart';
+import '../../../../shared/widgets/app_modal.dart';
 import '../../../auth/data/auth_provider.dart';
 
 // ─── Provider historique appels par conversation ───────────────
@@ -28,9 +29,7 @@ final callHistoryProvider =
   } else {
     list = [];
   }
-  return list
-      .map((e) => CallModel.fromJson(e as Map<String, dynamic>))
-      .toList();
+  return list.map((e) => CallModel.fromJson(e as Map<String, dynamic>)).toList();
 });
 
 // ─── Page principale d'appel ──────────────────────────────────
@@ -57,6 +56,7 @@ class _CallPageState extends ConsumerState<CallPage>
   bool _speakerOn = false;
   bool _cameraOff = false;
   bool _frontCamera = true;
+  bool _isActionInProgress = false;
 
   Duration _duration = Duration.zero;
   Timer? _timer;
@@ -76,6 +76,8 @@ class _CallPageState extends ConsumerState<CallPage>
     }
 
     _setupCallServiceCallbacks();
+
+    // Si l'appel est déjà actif (répondu), démarrer le timer
     if (_call.isActive) _startTimer();
   }
 
@@ -85,10 +87,10 @@ class _CallPageState extends ConsumerState<CallPage>
     await _remoteRenderer!.initialize();
 
     if (_callService.localStream != null) {
-      _localRenderer!.srcObject = _callService.localStream;
+      setState(() => _localRenderer!.srcObject = _callService.localStream);
     }
     if (_callService.remoteStream != null) {
-      _remoteRenderer!.srcObject = _callService.remoteStream;
+      setState(() => _remoteRenderer!.srcObject = _callService.remoteStream);
     }
   }
 
@@ -104,7 +106,8 @@ class _CallPageState extends ConsumerState<CallPage>
 
     _callService.onCallStatusChanged = (status) {
       if (!mounted) return;
-      debugPrint('[CallPage] Status changed: $status');
+      debugPrint('[CallPage] onCallStatusChanged: $status');
+
       switch (status) {
         case 'active':
           setState(() {
@@ -113,12 +116,39 @@ class _CallPageState extends ConsumerState<CallPage>
           _startTimer();
           break;
         case 'rejected':
+          _timer?.cancel();
+          if (mounted) {
+            AppModal.show(
+              context,
+              type: ModalType.warning,
+              title: 'Appel refusé',
+              message: '${_remotePartyName} a refusé l\'appel.',
+              onClose: () { if (mounted) context.pop(); },
+            );
+          }
+          break;
         case 'ended':
-        case 'missed':
           _timer?.cancel();
           if (mounted) context.pop();
           break;
+        case 'missed':
+          _timer?.cancel();
+          if (mounted) {
+            AppModal.show(
+              context,
+              type: ModalType.info,
+              title: 'Appel sans réponse',
+              message: 'Personne n\'a répondu à l\'appel.',
+              onClose: () { if (mounted) context.pop(); },
+            );
+          }
+          break;
       }
+    };
+
+    _callService.onError = (error) {
+      if (!mounted) return;
+      AppModal.error(context, title: 'Erreur d\'appel', message: error);
     };
   }
 
@@ -130,35 +160,74 @@ class _CallPageState extends ConsumerState<CallPage>
   }
 
   // ── Actions ──────────────────────────────────────────────────
+
   Future<void> _answer() async {
+    if (_isActionInProgress) return;
+    setState(() => _isActionInProgress = true);
+
     final currentUser = ref.read(authProvider).user;
+    if (currentUser == null) {
+      setState(() => _isActionInProgress = false);
+      AppModal.error(context,
+          title: 'Erreur', message: 'Utilisateur non authentifié.');
+      return;
+    }
+
     final success = await _callService.answerCall(
       _call.id,
       _call.conversationId,
-      currentUser?.id ?? 0,
+      currentUser.id,
     );
-    if (success && mounted) {
+
+    if (!mounted) return;
+    setState(() => _isActionInProgress = false);
+
+    if (success) {
       setState(() {
         _call = _call.copyWith(status: 'active', startedAt: DateTime.now());
       });
       _startTimer();
+    } else {
+      AppModal.error(context,
+          title: 'Impossible de répondre',
+          message: 'L\'appel n\'est plus disponible.',
+          onClose: () { if (mounted) context.pop(); });
     }
   }
 
   Future<void> _reject() async {
+    if (_isActionInProgress) return;
+    setState(() => _isActionInProgress = true);
+
     await _callService.rejectCall(_call.id);
-    if (mounted) context.pop();
+
+    if (mounted) {
+      setState(() => _isActionInProgress = false);
+      context.pop();
+    }
   }
 
   Future<void> _end() async {
+    if (_isActionInProgress) return;
+    setState(() => _isActionInProgress = true);
+
     _timer?.cancel();
     await _callService.endCall();
-    if (mounted) context.pop();
+
+    if (mounted) {
+      setState(() => _isActionInProgress = false);
+      context.pop();
+    }
   }
 
   void _toggleMute() {
     setState(() => _muted = !_muted);
     _callService.toggleMute(_muted);
+  }
+
+  void _toggleSpeaker() {
+    setState(() => _speakerOn = !_speakerOn);
+    // Sur Android, gérer le haut-parleur via le service natif si besoin
   }
 
   void _toggleCamera() {
@@ -192,29 +261,23 @@ class _CallPageState extends ConsumerState<CallPage>
   String get _remotePartyName {
     final myId = _currentUserId;
     final iAmCaller = _call.callerId == myId;
-
     if (iAmCaller) {
-      // Je suis l'appelant : afficher le nom de l'appelé
       if (_call.callee != null) return _call.callee!.fullName;
       final other = widget.participants.where((p) => p.id != myId).firstOrNull;
       return other?.fullName ?? 'Appel en cours...';
     } else {
-      // Je suis l'appelé : afficher le nom de l'appelant
       return _call.caller?.fullName ?? 'Appel entrant';
     }
   }
 
   String? get _remotePartyPhone {
     final myId = _currentUserId;
-    final iAmCaller = _call.callerId == myId;
-
-    if (iAmCaller) {
+    if (_call.callerId == myId) {
       if (_call.callee != null) return _call.callee!.phoneNumber;
       final other = widget.participants.where((p) => p.id != myId).firstOrNull;
       return other?.phoneNumber;
-    } else {
-      return _call.caller?.phoneNumber;
     }
+    return _call.caller?.phoneNumber;
   }
 
   @override
@@ -227,6 +290,7 @@ class _CallPageState extends ConsumerState<CallPage>
     _callService.onLocalStream = null;
     _callService.onRemoteStream = null;
     _callService.onCallStatusChanged = null;
+    _callService.onError = null;
     super.dispose();
   }
 
@@ -236,88 +300,114 @@ class _CallPageState extends ConsumerState<CallPage>
     final size = MediaQuery.of(context).size;
     final isWide = size.width > 600;
 
-    return Scaffold(
-      backgroundColor: AppColors.primaryDark,
-      body: Stack(
-        children: [
-          // Fond vidéo distant
-          if (!kIsWeb && isVideo && _call.isActive && _remoteRenderer != null)
-            Positioned.fill(
-              child: RTCVideoView(
-                _remoteRenderer!,
-                objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-              ),
-            )
-          else
-            _buildAudioBackground(),
-
-          // Vidéo locale (miniature)
-          if (!kIsWeb && isVideo && _call.isActive && !_cameraOff && _localRenderer != null)
-            Positioned(
-              top: isWide ? 80 : 60,
-              right: 16,
-              width: isWide ? 160 : 100,
-              height: isWide ? 220 : 140,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (!didPop) {
+          // Empêcher le retour arrière pendant un appel actif
+          if (_call.isActive) {
+            AppModal.warning(context,
+                title: 'Appel en cours',
+                message: 'Utilisez le bouton "Raccrocher" pour terminer l\'appel.');
+          } else {
+            await _end();
+          }
+        }
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.primaryDark,
+        body: Stack(
+          children: [
+            // ── Fond vidéo distant ───────────────────────────
+            if (!kIsWeb && isVideo && _call.isActive && _remoteRenderer != null)
+              Positioned.fill(
                 child: RTCVideoView(
-                  _localRenderer!,
-                  mirror: _frontCamera,
+                  _remoteRenderer!,
                   objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                 ),
-              ),
-            ),
+              )
+            else
+              _buildAudioBackground(),
 
-          // Web: vidéo non supportée
-          if (kIsWeb && isVideo)
-            Positioned.fill(
-              child: Container(
-                color: Colors.black54,
-                child: const Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.videocam_off_rounded, color: Colors.white54, size: 48),
-                      SizedBox(height: 12),
-                      Text(
-                        'Vidéo non disponible sur navigateur',
-                        style: TextStyle(color: Colors.white54),
-                      ),
-                    ],
+            // ── Vidéo locale miniature ───────────────────────
+            if (!kIsWeb && isVideo && _call.isActive && !_cameraOff && _localRenderer != null)
+              Positioned(
+                top: isWide ? 80 : 60,
+                right: 16,
+                width: isWide ? 160 : 100,
+                height: isWide ? 220 : 140,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: RTCVideoView(
+                    _localRenderer!,
+                    mirror: _frontCamera,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                   ),
                 ),
               ),
-            ),
 
-          // Overlay principal
-          SafeArea(
-            child: Column(
-              children: [
-                // Barre supérieure
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  child: Row(
-                    children: [
-                      if (_call.isActive && _call.conversationId != 0)
-                        IconButton(
-                          icon: const Icon(Icons.history_rounded, color: Colors.white60),
-                          tooltip: 'Historique',
-                          onPressed: _showCallHistory,
+            // ── Web: vidéo non supportée ─────────────────────
+            if (kIsWeb && isVideo)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.black54,
+                  child: const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.videocam_off_rounded, color: Colors.white54, size: 48),
+                        SizedBox(height: 12),
+                        Text(
+                          'Vidéo WebRTC\nnon disponible sur ce navigateur',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white54, fontFamily: 'Nunito'),
                         ),
-                      const Spacer(),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
+              ),
 
-                Expanded(
-                  child: isWide
-                      ? _buildWideLayout(isVideo)
-                      : _buildNarrowLayout(isVideo),
-                ),
-              ],
+            // ── Overlay principal ────────────────────────────
+            SafeArea(
+              child: Column(
+                children: [
+                  // Barre supérieure
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Row(
+                      children: [
+                        if (_call.isActive && _call.conversationId != 0)
+                          IconButton(
+                            icon: const Icon(Icons.history_rounded, color: Colors.white60),
+                            tooltip: 'Historique',
+                            onPressed: _showCallHistory,
+                          ),
+                        const Spacer(),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: isWide
+                        ? _buildWideLayout(isVideo)
+                        : _buildNarrowLayout(isVideo),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+
+            // ── Indicateur d'action en cours ─────────────────
+            if (_isActionInProgress)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.black.withOpacity(0.3),
+                  child: const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -383,40 +473,30 @@ class _CallPageState extends ConsumerState<CallPage>
       statusText = _call.status;
     }
 
-    final remoteName = _remotePartyName;
-    final remotePhone = _remotePartyPhone;
-
     return Column(
       children: [
-        _AnimatedAvatar(child: AvatarWidget(name: remoteName, size: 110)),
+        _AnimatedAvatar(child: AvatarWidget(name: _remotePartyName, size: 110)),
         const SizedBox(height: 20),
         Text(
-          remoteName,
+          _remotePartyName,
           style: const TextStyle(
             color: Colors.white,
             fontSize: 26,
             fontWeight: FontWeight.w800,
             fontFamily: 'Nunito',
-            letterSpacing: 0.3,
           ),
         ),
         const SizedBox(height: 4),
-        if (remotePhone != null) ...[
+        if (_remotePartyPhone != null) ...[
           Text(
-            remotePhone,
-            style: TextStyle(
-                color: Colors.white.withOpacity(0.6),
-                fontSize: 14,
-                fontFamily: 'Nunito'),
+            _remotePartyPhone!,
+            style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 14, fontFamily: 'Nunito'),
           ),
           const SizedBox(height: 4),
         ],
         Text(
           statusText,
-          style: TextStyle(
-              color: Colors.white.withOpacity(0.75),
-              fontSize: 16,
-              fontFamily: 'Nunito'),
+          style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 16, fontFamily: 'Nunito'),
         ),
         const SizedBox(height: 10),
         Container(
@@ -424,7 +504,7 @@ class _CallPageState extends ConsumerState<CallPage>
           decoration: BoxDecoration(
             color: Colors.white.withOpacity(0.12),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.white.withOpacity(0.2), width: 1),
+            border: Border.all(color: Colors.white.withOpacity(0.2)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -437,8 +517,7 @@ class _CallPageState extends ConsumerState<CallPage>
               const SizedBox(width: 6),
               Text(
                 _call.isAudio ? 'Appel audio' : 'Appel vidéo',
-                style: const TextStyle(
-                    color: Colors.white, fontSize: 13, fontFamily: 'Nunito'),
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'Nunito'),
               ),
             ],
           ),
@@ -451,15 +530,18 @@ class _CallPageState extends ConsumerState<CallPage>
     if (_call.isPending) {
       final isCaller = _call.callerId == _currentUserId;
       if (isCaller) {
+        // Appelant: seulement "Annuler"
         return Center(
           child: _buildRoundButton(
             icon: Icons.call_end_rounded,
             color: AppColors.error,
             label: 'Annuler',
             onTap: _end,
+            enabled: !_isActionInProgress,
           ),
         );
       } else {
+        // Appelé: "Refuser" et "Répondre"
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
           child: Row(
@@ -470,12 +552,14 @@ class _CallPageState extends ConsumerState<CallPage>
                 color: AppColors.error,
                 label: 'Refuser',
                 onTap: _reject,
+                enabled: !_isActionInProgress,
               ),
               _buildRoundButton(
                 icon: _call.isVideo ? Icons.videocam_rounded : Icons.call_rounded,
                 color: AppColors.success,
                 label: 'Répondre',
                 onTap: _answer,
+                enabled: !_isActionInProgress,
               ),
             ],
           ),
@@ -501,7 +585,7 @@ class _CallPageState extends ConsumerState<CallPage>
                 icon: _speakerOn ? Icons.volume_up_rounded : Icons.volume_down_rounded,
                 label: 'Enceinte',
                 active: _speakerOn,
-                onTap: () => setState(() => _speakerOn = !_speakerOn),
+                onTap: _toggleSpeaker,
               ),
               if (isVideo && !kIsWeb) ...[
                 _buildSmallButton(
@@ -525,6 +609,7 @@ class _CallPageState extends ConsumerState<CallPage>
             color: AppColors.error,
             label: 'Raccrocher',
             onTap: _end,
+            enabled: !_isActionInProgress,
           ),
         ],
       );
@@ -538,31 +623,42 @@ class _CallPageState extends ConsumerState<CallPage>
     required Color color,
     required String label,
     required VoidCallback onTap,
+    bool enabled = true,
   }) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: enabled ? onTap : null,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
             width: 72,
             height: 72,
             decoration: BoxDecoration(
-              color: color,
+              color: enabled ? color : color.withOpacity(0.5),
               shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                    color: color.withOpacity(0.4),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6)),
-              ],
+              boxShadow: enabled
+                  ? [
+                      BoxShadow(
+                        color: color.withOpacity(0.4),
+                        blurRadius: 16,
+                        offset: const Offset(0, 6),
+                      )
+                    ]
+                  : [],
             ),
-            child: Icon(icon, color: Colors.white, size: 32),
+            child: enabled
+                ? Icon(icon, color: Colors.white, size: 32)
+                : const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  ),
           ),
           const SizedBox(height: 8),
           Text(label,
-              style: const TextStyle(
-                  color: Colors.white, fontSize: 13, fontFamily: 'Nunito')),
+              style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'Nunito')),
         ],
       ),
     );
@@ -658,12 +754,8 @@ class _CallHistorySheet extends ConsumerWidget {
               data: (calls) {
                 if (calls.isEmpty) {
                   return const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Text('Aucun appel dans l\'historique',
-                          style: TextStyle(
-                              color: AppColors.grey400, fontFamily: 'Nunito')),
-                    ),
+                    child: Text('Aucun appel dans l\'historique',
+                        style: TextStyle(color: AppColors.grey400, fontFamily: 'Nunito')),
                   );
                 }
                 return ListView.separated(
