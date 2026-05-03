@@ -20,7 +20,7 @@ dependencies:
   dio: ^5.4.3
 
   shared_preferences: ^2.2.0
-  pusher_channels_flutter: ^2.1.0
+  pusher_client_socket: 0.0.7
 
   # Secure storage
   flutter_secure_storage: ^9.2.2
@@ -46,10 +46,6 @@ dependencies:
   # Permissions
   permission_handler: ^11.3.1
 
-  # Firebase
-  firebase_core: ^3.3.0
-  firebase_messaging: ^15.1.0
-
   # Deep links
   app_links: ^6.0.0
 
@@ -66,7 +62,7 @@ dependencies:
   # Open files
   open_filex: ^4.3.4
 
-  record: 6.0.0
+  record: ^5.0.0
 
 dev_dependencies:
   flutter_test:

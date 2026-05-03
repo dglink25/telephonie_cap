@@ -1,24 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../api/api_client.dart';
 import 'dart:ui' show Color;
+import 'package:flutter/services.dart';
+import '../constants/app_constants.dart';
+import 'dart:js' as js;
 
-
-@pragma('vm:entry-point')
-Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-
-  debugPrint('[FCM Background] type=${message.data['type']} id=${message.messageId}');
-}
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
   NotificationService._internal();
 
-  final FirebaseMessaging _fcm = FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifs =
       FlutterLocalNotificationsPlugin();
 
@@ -27,33 +22,20 @@ class NotificationService {
 
   bool _initialized = false;
 
+  void _requestWebPermission() {
+      
+  }
+
   // ── Initialisation ─────────────────────────────────────────────
   Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
 
-    // Handler background AVANT tout
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-
-    // Permissions — demander TOUTES les permissions critiques
-    final settings = await _fcm.requestPermission(
-      alert: true,
-      announcement: true,
-      badge: true,
-      carPlay: false,
-      criticalAlert: true,
-      provisional: false,
-      sound: true,
-    );
-
-    debugPrint('[FCM] Permission status: ${settings.authorizationStatus}');
-
-    // Présentation des notifications FCM en premier plan (iOS)
-    await _fcm.setForegroundNotificationPresentationOptions(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
+    if (kIsWeb) {
+      // Sur web: demander permission via JS interop
+      _requestWebPermission();
+      return; // Pas de flutter_local_notifications sur web
+    }
 
     // Créer les canaux Android AVANT d'initialiser le plugin
     await _setupAndroidChannels();
@@ -71,29 +53,6 @@ class NotificationService {
       onDidReceiveNotificationResponse: _onNotificationTap,
       onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationTap,
     );
-
-    // Écoute messages FCM en premier plan
-    FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
-
-    // Tap sur notification quand app en arrière-plan (pas tuée)
-    FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
-
-    // Notification initiale (app tuée, relancée depuis notif)
-    final initialMessage = await _fcm.getInitialMessage();
-    if (initialMessage != null) {
-      // Délai pour laisser l'app s'initialiser
-      await Future.delayed(const Duration(milliseconds: 500));
-      _handleNotificationTap(initialMessage);
-    }
-
-    await _registerFcmToken();
-
-    _fcm.onTokenRefresh.listen((token) async {
-      debugPrint('[FCM] Token refreshed');
-      try {
-        await ApiClient().updateFcmToken(token);
-      } catch (_) {}
-    });
   }
 
   // ── Canaux Android ─────────────────────────────────────────────
@@ -133,54 +92,6 @@ class NotificationService {
     );
   }
 
-  // ── Enregistrement token FCM ───────────────────────────────────
-  Future<void> _registerFcmToken() async {
-    if (kIsWeb) return;
-    try {
-      final token = await _fcm.getToken();
-      if (token != null && token.isNotEmpty) {
-        await ApiClient().updateFcmToken(token);
-        debugPrint('[FCM] Token enregistré: ${token.substring(0, 20)}...');
-      }
-    } catch (e) {
-      debugPrint('[FCM] Token registration error: $e');
-    }
-  }
-
-  Future<void> refreshFcmToken() => _registerFcmToken();
-
-  // ── Message FCM en premier plan ────────────────────────────────
-  void _handleForegroundMessage(RemoteMessage message) {
-    final data = message.data;
-    final type = data['type'] as String? ?? '';
-
-    debugPrint('[FCM Foreground] type=$type data=$data');
-
-    if (type == 'incoming_call') {
-      // Déclencher la sonnerie + notification locale visuelle
-      _showCallNotification(
-        callId: data['call_id'] ?? '0',
-        callerName: data['caller_name'] ?? 'Appel entrant',
-        callerPhone: data['caller_phone'] ?? '',
-        callType: data['call_type'] ?? 'audio',
-        convId: data['conversation_id'] ?? '0',
-      );
-      // Notifier le CallService pour déclencher la sonnerie inApp
-      onIncomingCallNotification?.call(data);
-    } else if (type == 'new_message') {
-      _showMessageNotification(
-        title: message.notification?.title ??
-            data['sender_name'] as String? ??
-            'Nouveau message',
-        body: message.notification?.body ?? data['body'] as String? ?? '',
-        data: data,
-      );
-    }
-  }
-
-  void _handleNotificationTap(RemoteMessage message) {
-    onMessageTap?.call(message.data);
-  }
 
   void _onNotificationTap(NotificationResponse response) {
     if (response.payload == null) return;
@@ -224,6 +135,16 @@ class NotificationService {
     );
   }
 
+
+  void _showWebNotification({required String title, required String body, required Map<String, dynamic> data}) {
+  // Appel JS via dart:js_interop
+    try {
+      js.context.callMethod('_showWebNotification', [title, body, js.JsObject.jsify(data)]);
+    } catch (e) {
+      debugPrint('[WebNotif] Error: $e');
+    }
+  }
+
   // ── Notification locale appel entrant ────────────────────────
   Future<void> showIncomingCallNotificationInApp({
     required String callerName,
@@ -231,7 +152,20 @@ class NotificationService {
     required int callId,
     required int conversationId,
   }) async {
-    if (kIsWeb) return;
+    if (kIsWeb) {
+      _showWebNotification(
+        title: callerName,
+        body: callType == 'video' ? 'Appel vidéo entrant' : 'Appel audio entrant',
+        data: {
+          'type': 'incoming_call',
+          'call_id': callId.toString(),
+          'conversation_id': conversationId.toString(),
+          'call_type': callType,
+        },
+      );
+      return;
+    }
+
     await _showCallNotification(
       callId: callId.toString(),
       callerName: callerName,
@@ -316,14 +250,14 @@ class NotificationService {
       actions: [
         const AndroidNotificationAction(
           'reject_call',
-          '❌ Refuser',
+          ' Refuser',
           cancelNotification: true,
           showsUserInterface: false,
           inputs: [],
         ),
         const AndroidNotificationAction(
           'answer_call',
-          '✅ Répondre',
+          'Répondre',
           cancelNotification: true,
           showsUserInterface: true,
           inputs: [],

@@ -15,231 +15,114 @@
   <title>Téléphonie CAP</title>
   <link rel="manifest" href="manifest.json">
 
-  <!-- Firebase -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
-
-  <!-- Pusher (pour Reverb) -->
-  <script charset="utf-8" src="https://js.pusher.com/8.3.0/pusher.min.js"></script>
+  <script src="js/pusher.min.js"></script>
 
   <script>
-    // ── Enregistrement du Service Worker Firebase ─────────────
+
+    let _audioCtx = null;
+  let _ringtoneInterval = null;
+
+  function _unlockAudio() {
+    if (!_audioCtx) {
+      _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (_audioCtx.state === 'suspended') {
+      _audioCtx.resume();
+    }
+  }
+
+  document.addEventListener('click', _unlockAudio, { once: false });
+  document.addEventListener('touchstart', _unlockAudio, { once: false });
+
+  // Sonnerie synthétique — aucun fichier requis
+  function _playSyntheticRingtone() {
+    if (!_audioCtx) _unlockAudio();
+    if (!_audioCtx || _audioCtx.state === 'suspended') return;
+    
+    const playBeep = (freq, start, duration) => {
+      const osc = _audioCtx.createOscillator();
+      const gain = _audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(_audioCtx.destination);
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.3, _audioCtx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + start + duration);
+      osc.start(_audioCtx.currentTime + start);
+      osc.stop(_audioCtx.currentTime + start + duration + 0.05);
+    };
+
+    // Pattern: deux bips courts toutes les 2 secondes
+    const ring = () => {
+      playBeep(880, 0, 0.15);
+      playBeep(880, 0.2, 0.15);
+    };
+    
+    ring();
+    return setInterval(ring, 2000);
+  }
+
+  window._playWebNotificationSound = function(type) {
+    window._stopWebCallSound(); // arrêter le précédent
+    
+    if (type === 'call' || type === 'dialing') {
+      // Tenter le fichier MP3 d'abord
+      const audio = new Audio(
+        type === 'call' 
+          ? 'assets/assets/audio/ringtone.mp3' 
+          : 'assets/assets/audio/dialing.mp3'
+      );
+      audio.loop = true;
+      audio.volume = type === 'call' ? 1.0 : 0.5;
+      
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => { _callAudio = audio; })
+          .catch(() => {
+            // Fallback synthétique si MP3 bloqué
+            _ringtoneInterval = _playSyntheticRingtone();
+          });
+      }
+      _callAudio = audio;
+    }
+  };
+
+  window._stopWebCallSound = function() {
+    if (_callAudio) {
+      try { _callAudio.pause(); _callAudio.currentTime = 0; } catch(_) {}
+      _callAudio = null;
+    }
+    if (_ringtoneInterval) {
+      clearInterval(_ringtoneInterval);
+      _ringtoneInterval = null;
+    }
+  };
+  
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function() {
-        navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' })
-          .then(function(registration) {
-            console.log('[SW] Enregistré:', registration.scope);
-          })
-          .catch(function(err) {
-            console.warn('[SW] Échec:', err);
-          });
-
-        // Écouter les messages du service worker (actions notif)
-        navigator.serviceWorker.addEventListener('message', function(event) {
-          const msg = event.data;
-          if (!msg) return;
-
-          if (msg.type === 'NAVIGATE' && msg.url) {
-            // Flutter router handle via postMessage
-            window._handleSWNavigation && window._handleSWNavigation(msg.url, msg.data);
-          }
-          if (msg.type === 'REJECT_CALL' && msg.callId) {
-            window._handleSWRejectCall && window._handleSWRejectCall(msg.callId);
-          }
-        });
+        // Utiliser sw.js local, PAS firebase-messaging-sw.js
+        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+          .then(reg => console.log('[SW] Enregistré:', reg.scope))
+          .catch(err => console.warn('[SW] Échec:', err));
       });
     }
 
-    // ── Config Reverb ─────────────────────────────────────────
-    window.REVERB_HOST    = '192.168.100.195';
-    window.REVERB_PORT    = 8080;
-    window.REVERB_APP_KEY = 'xtsedffitwzc6vpwl7tz';
-    window.REVERB_SCHEME  = 'http';
-
-    // Surcharger Pusher pour pointer vers Reverb
-    const _OriginalPusher = window.Pusher;
-    window.Pusher = function(apiKey, options) {
-      const reverbOptions = Object.assign({}, options, {
-        wsHost:            window.REVERB_HOST,
-        wsPort:            window.REVERB_PORT,
-        wssPort:           window.REVERB_PORT,
-        forceTLS:          window.REVERB_SCHEME === 'https',
-        disableStats:      true,
-        enabledTransports: window.REVERB_SCHEME === 'https' ? ['wss'] : ['ws'],
-        activityTimeout:   30000,
-        pongTimeout:       10000,
-      });
-      return new _OriginalPusher(apiKey, reverbOptions);
-    };
-    Object.assign(window.Pusher, _OriginalPusher);
-    window.Pusher.logToConsole = false;
-
-    // ── Gestion permissions notifications ─────────────────────
-    window._requestNotificationPermission = async function() {
-      if (!('Notification' in window)) {
-        console.warn('[Notif] API Notification non supportée');
-        return false;
-      }
-      if (Notification.permission === 'granted') return true;
-      if (Notification.permission === 'denied') return false;
-
-      const permission = await Notification.requestPermission();
-      return permission === 'granted';
-    };
-
-    // Demander la permission au chargement (après interaction utilisateur)
-    document.addEventListener('click', function requestOnFirstClick() {
-      window._requestNotificationPermission();
-      document.removeEventListener('click', requestOnFirstClick);
-    }, { once: true });
-
-    // ── Notification web ──────────────────────────────────────
-    window._showWebNotification = function(title, body, data) {
-      if (!('Notification' in window)) return;
-      if (Notification.permission !== 'granted') return;
-
-      const isCall = data && data.type === 'incoming_call';
-
-      // Utiliser le service worker pour les notifications persistantes
-      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-        navigator.serviceWorker.ready.then(function(reg) {
-          reg.showNotification(title, {
-            body: body,
-            icon: '/icons/Icon-192.png',
-            badge: '/icons/Icon-192.png',
-            tag: data && data.call_id ? 'call-' + data.call_id : 'msg-' + Date.now(),
-            requireInteraction: isCall,
-            vibrate: isCall ? [500, 200, 500] : [200],
-            actions: isCall ? [
-              { action: 'reject', title: '❌ Refuser' },
-              { action: 'answer', title: '✅ Répondre' },
-            ] : [],
-            data: data || {},
-          });
+    // Envoyer une notif d'appel depuis Flutter via postMessage au SW
+    window._showCallNotificationViaSW = function(callerName, callType, callId, conversationId) {
+      navigator.serviceWorker.ready.then(reg => {
+        reg.active && reg.active.postMessage({
+          type: 'SHOW_CALL_NOTIFICATION',
+          callerName, callType, callId, conversationId
         });
-        return;
-      }
-
-      // Fallback: notification basique si SW pas disponible
-      if (document.visibilityState === 'visible' && !isCall) return;
-
-      const notif = new Notification(title, {
-        body: body,
-        icon: '/icons/Icon-192.png',
-        tag: data && data.call_id ? 'call-' + data.call_id : 'default',
-        requireInteraction: isCall,
-        data: data || {},
       });
-
-      notif.onclick = function(e) {
-        e.preventDefault();
-        window.focus();
-        notif.close();
-        if (data && data.conversation_id) {
-          window._handleSWNavigation && window._handleSWNavigation(
-            '/conversations/' + data.conversation_id, data
-          );
-        }
-      };
-
-      if (!isCall) {
-        setTimeout(() => notif.close(), 5000);
-      }
     };
-
-    // ── Audio de sonnerie web ─────────────────────────────────
-    let _callAudio = null;
-    let _dialingAudio = null;
-
-    window._playWebNotificationSound = function(type) {
-      try {
-        window._stopWebCallSound(); // Stopper tout son précédent
-
-        const audioPath = type === 'call'
-          ? 'assets/assets/audio/ringtone.mp3'
-          : type === 'dialing'
-            ? 'assets/assets/audio/dialing.mp3'
-            : 'assets/assets/audio/notification.mp3';
-
-        const audio = new Audio(audioPath);
-
-        if (type === 'call' || type === 'dialing') {
-          audio.loop = true;
-          audio.volume = type === 'call' ? 1.0 : 0.5;
-          _callAudio = audio;
-        }
-
-        // Unlock audio context sur iOS Safari / Firefox
-        const playPromise = audio.play();
-        if (playPromise !== undefined) {
-          playPromise.catch(function(e) {
-            console.warn('[WebAudio] Autoplay bloqué, en attente interaction:', e.message);
-            // Retry on user interaction
-            document.addEventListener('touchstart', function retry() {
-              audio.play().catch(console.warn);
-              document.removeEventListener('touchstart', retry);
-            }, { once: true });
-            document.addEventListener('click', function retry() {
-              audio.play().catch(console.warn);
-              document.removeEventListener('click', retry);
-            }, { once: true });
-          });
-        }
-      } catch(e) {
-        console.warn('[WebAudio] Erreur:', e);
-      }
-    };
-
-    window._stopWebCallSound = function() {
-      if (_callAudio) {
-        try {
-          _callAudio.pause();
-          _callAudio.currentTime = 0;
-        } catch(_) {}
-        _callAudio = null;
-      }
-      if (_dialingAudio) {
-        try {
-          _dialingAudio.pause();
-          _dialingAudio.currentTime = 0;
-        } catch(_) {}
-        _dialingAudio = null;
-      }
-    };
-
-    // ── Wake Lock API (garder l'écran allumé pendant appel) ───
-    window._requestWakeLock = async function() {
-      if ('wakeLock' in navigator) {
-        try {
-          window._wakeLock = await navigator.wakeLock.request('screen');
-          console.log('[WakeLock] Activé');
-        } catch(e) {
-          console.warn('[WakeLock] Erreur:', e.message);
-        }
-      }
-    };
-
-    window._releaseWakeLock = function() {
-      if (window._wakeLock) {
-        window._wakeLock.release().catch(console.warn);
-        window._wakeLock = null;
-        console.log('[WakeLock] Libéré');
-      }
-    };
-
-    // ── Visibilité page ───────────────────────────────────────
-    document.addEventListener('visibilitychange', function() {
-      if (document.visibilityState === 'visible') {
-        console.log('[Page] Revenu au premier plan');
-        // Relancer le Wake Lock si appel en cours
-        if (window._callInProgress) {
-          window._requestWakeLock();
-        }
-      }
-    });
   </script>
+
+
 </head>
 <body>
+  
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
