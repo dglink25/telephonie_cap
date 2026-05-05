@@ -28,6 +28,12 @@ import '../../data/messages_provider.dart';
 import 'dart:html' as html;
 import 'package:path_provider/path_provider.dart' show getDownloadsDirectory;
 
+import 'package:flutter/foundation.dart';
+
+// Conditional imports
+import 'chat_web.dart'
+    if (dart.library.io) 'chat_native.dart';
+
 class ChatPage extends ConsumerStatefulWidget {
   final int conversationId;
   const ChatPage({super.key, required this.conversationId});

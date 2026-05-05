@@ -1,16 +1,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+  <!-- Permissions requises -->
   <uses-permission android:name="android.permission.INTERNET"/>
   <uses-permission android:name="android.permission.CAMERA"/>
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+  <!-- BUG #24 CORRIGE : permissions manquantes pour service foreground -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL"/>
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+  <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
   <application
     android:label="telephonie_cap"
     android:name="${applicationName}"
-    android:icon="@mipmap/ic_launcher">
+    android:icon="@mipmap/ic_launcher"
+    android:usesCleartextTraffic="true">
 
     <activity
       android:name=".MainActivity"
@@ -20,7 +28,9 @@
       android:theme="@style/LaunchTheme"
       android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
       android:hardwareAccelerated="true"
-      android:windowSoftInputMode="adjustResize">
+      android:windowSoftInputMode="adjustResize"
+      android:showWhenLocked="true"
+      android:turnScreenOn="true">
 
       <meta-data
         android:name="io.flutter.embedding.android.NormalTheme"
@@ -31,6 +41,7 @@
         <category android:name="android.intent.category.LAUNCHER"/>
       </intent-filter>
 
+      <!-- Deep link pour les invitations -->
       <intent-filter android:autoVerify="true">
         <action android:name="android.intent.action.VIEW"/>
         <category android:name="android.intent.category.DEFAULT"/>
@@ -38,16 +49,29 @@
         <data android:scheme="telephoniecap" android:host="invite"/>
       </intent-filter>
 
-      <!--
-      <intent-filter android:autoVerify="true">
-        <action android:name="android.intent.action.VIEW"/>
+      <!-- Intent ANSWER_CALL depuis la notification -->
+      <intent-filter>
+        <action android:name="ANSWER_CALL"/>
         <category android:name="android.intent.category.DEFAULT"/>
-        <category android:name="android.intent.category.BROWSABLE"/>
-        <data android:scheme="https" android:host="YOUR_DOMAIN" android:pathPrefix="/invitation"/>
       </intent-filter>
-      -->
 
     </activity>
+
+    <!-- BUG #24 CORRIGE : Service foreground declare dans le manifest -->
+    <service
+      android:name=".ReverbForegroundService"
+      android:exported="false"
+      android:foregroundServiceType="phoneCall"
+      android:stopWithTask="false"/>
+
+    <!-- BUG #23 CORRIGE : Receiver pour les actions de notification declare -->
+    <receiver
+      android:name=".CallActionReceiver"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="REJECT_CALL"/>
+      </intent-filter>
+    </receiver>
 
     <!-- Flutter embedding -->
     <meta-data

@@ -1,0 +1,1 @@
+void sendTokenToServiceWorker(String token) {}

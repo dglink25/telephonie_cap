@@ -12,7 +12,7 @@ final notificationListenerProvider = Provider<void>((ref) {
   final ws = WebSocketService();
 
   Future<void> doSubscribe() async {
-    // Retry jusqu'à 10 fois (5 secondes max) pour attendre la connexion WS
+    // Attendre la connexion WS (max 5 secondes)
     for (int i = 0; i < 10; i++) {
       if (ws.isConnected) break;
       await Future.delayed(const Duration(milliseconds: 500));
@@ -27,7 +27,6 @@ final notificationListenerProvider = Provider<void>((ref) {
       }
       try {
         await ws.init(token);
-        // Laisser le temps à la connexion de s'établir
         await Future.delayed(const Duration(milliseconds: 800));
       } catch (e) {
         debugPrint('[NotifListener] WS init error: $e');
@@ -36,17 +35,17 @@ final notificationListenerProvider = Provider<void>((ref) {
     }
 
     if (!ws.isConnected) {
-      debugPrint('[NotifListener] WS toujours déconnecté après init, abandon');
+      debugPrint('[NotifListener] WS toujours déconnecté, abandon');
       return;
     }
 
-    debugPrint('[NotifListener] ✓ Abonnement canal presence-user.${user.id}');
+    debugPrint('[NotifListener] ✓ Abonnement presence-user.${user.id}');
+
+    // BUG #5 CORRIGÉ : subscribeToUserChannel existe maintenant dans le service unifié
     ws.subscribeToUserChannel(user.id, events: {
       'notification.new': (data) {
-        debugPrint('[NotifListener] ✓ notification.new reçue: $data');
-        ref
-            .read(notificationsProvider.notifier)
-            .addRealtimeNotification(data);
+        debugPrint('[NotifListener] ✓ notification.new: $data');
+        ref.read(notificationsProvider.notifier).addRealtimeNotification(data);
       },
     });
   }
